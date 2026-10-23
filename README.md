@@ -262,6 +262,30 @@ cd sw
 python build.py openjazz          # -> build/openjazz.bin
 ```
 
+**CPU drawing vs. blitter (DMA)**, measured on the board (frames per second
+generated, printed over the UART every 5 s; the HDMI output shows at most 60):
+
+| | CPU, double buffer (wait for vblank) | CPU, triple buffer | Blitter (DMA), triple buffer |
+|---|---|---|---|
+| In game (Diamondus 1) | 30 | 57–72 | **135–167** |
+| In game (Diamondus 2) | — | 60–70 | **157–177** |
+| Main menu | 13–15 | 15–16 | 17.5 |
+| Intro | 29–30 | 40 | 43 |
+
+- With the CPU, `SDL_FillRect`/`SDL_BlitSurface` are `memset`/`memcpy` per row
+  (and a per-pixel compare for color-keyed sprites); with the blitter the CPU
+  only queues DMA commands (fill, copy, color key) and goes on with the game
+  logic. In game a frame takes ~7 ms instead of ~15 ms.
+- With double buffering every frame waited for the vblank, so a frame slightly
+  over 16.7 ms became 33.3 ms (30 FPS). Triple buffering removes that wait.
+- The menu is limited by its plasma effect, computed per pixel by the CPU, and
+  the intro by decoding the cutscene frames: the blitter barely helps there.
+- `JAZZ.TXT` on the microSD chooses the mode: `draw=blitter` (default) or
+  `draw=cpu`.
+- Conditions: the CPU columns were measured with audio at 48 kHz and the
+  blitter column mostly at 22050 Hz (Diamondus 1 at 48 kHz); the audio rate
+  has little effect on drawing.
+
 ## Test tools
 
 | Tool | Use |
