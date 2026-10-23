@@ -8,6 +8,7 @@ build.py - Builds the software for the bltfast SoC.
   python build.py boot --bit --flash  + write it to flash (permanent)
   python build.py --prog              only load the current .fs into the FPGA
   python build.py <app>               apps/<app>/*.c + lib -> build/<app>.bin (at 0x4000_0000)
+  python build.py bootmenu            SD program chooser -> build/sd/BOOT.BIN
   python build.py doom                Doom (apps/doom, with newlib) -> build/doom.bin
   python build.py <app> --run         builds, loads over UART (tools/load.py) and opens the terminal
   python build.py --src <file> --run
@@ -67,6 +68,20 @@ def build_app(name, srcs):
              if os.path.exists(os.path.join(HERE, "lib", f))]
     binf = link(name, extra + srcs + LIB, os.path.join(HERE, "lib", "app.ld"), "-O2")
     print(f"{name}.bin: {os.path.getsize(binf)} bytes")
+    return binf
+
+
+def build_bootmenu():
+    """bootmenu/: program chooser for the SD -> build/sd/BOOT.BIN (copy it to the card's root)."""
+    d = os.path.join(HERE, "bootmenu")
+    srcs = [os.path.join(d, "start.S"), os.path.join(d, "menu.c")] + \
+           [os.path.join(HERE, "lib", f) for f in ("gfx.c", "font8x8.c")] + LIB
+    binf = link("bootmenu", srcs, os.path.join(d, "menu.ld"), "-Os")
+    os.makedirs(os.path.join(B, "sd"), exist_ok=True)
+    out = os.path.join(B, "sd", "BOOT.BIN")
+    with open(binf, "rb") as fi, open(out, "wb") as fo:
+        fo.write(fi.read())
+    print(f"sd/BOOT.BIN: {os.path.getsize(out)} bytes (copy it to the root of the microSD)")
     return binf
 
 
@@ -138,6 +153,8 @@ def main():
         build_boot()
         if a.bit:
             run([os.path.join(GOWIN, "IDE", "bin", "gw_sh.exe"), "build.tcl"], cwd=ROOT)
+    elif a.what == "bootmenu":
+        binf = build_bootmenu()
     elif a.what == "doom" or (a.src and os.path.abspath(a.src).startswith(os.path.join(HERE, "apps", "doom"))):
         binf = build_doom()
     elif a.src:

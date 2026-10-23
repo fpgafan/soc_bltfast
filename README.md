@@ -39,7 +39,7 @@ Utilization (Gowin 1.9.12.04): ~73 % of the logic, 33/46 BSRAM, 13/24 DSP, 2/2 P
 rtl/            Verilog (cpu/, mem/, video/, audio/, periph/, soc_top.v, clocks.v)
 constraints/    pins (.cst) and clocks (.sdc)
 sim/            testbenches and models (Icarus Verilog) + Python tests
-sw/             software: boot/ (ROM), lib/ (runtime, gfx, sound, MIDI, SD/FAT), apps/doom
+sw/             software: boot/ (ROM), bootmenu/ (SD program chooser), lib/ (runtime, gfx, sound, MIDI, SD/FAT), apps/doom
 tools/          load.py (UART loader), img2c.py, midi2c.py, img2tex.py, wav2pcm.py, mkmidi.py, mkfont.py, timing.py
 build.tcl       synthesis + PnR with Gowin EDA
 ```
@@ -66,6 +66,15 @@ The boot ROM:
    sends `RVRST!` to reset the board and then switches to 2 Mbaud).
 3. If nothing arrives within 1.5 s, it boots `BOOT.BIN` from the microSD (FAT32/FAT16,
    root directory). To boot without a PC: copy e.g. `sw/build/doom.bin` as `BOOT.BIN`.
+
+**Boot menu** (`sw/bootmenu`): `python build.py bootmenu` produces `sw/build/sd/BOOT.BIN`,
+a program chooser. Copy it to the root of the microSD together with the programs
+(e.g. `DOOM.BIN`, `PACMAN.BIN`): it lists every `.BIN` file of the root directory and
+loads the chosen one at `0x4000_0000` exactly as the ROM would, so programs need no
+changes. The menu runs from `0x4078_0000` (the stub at the start of the image moves it
+there), so programs of up to 6 MB can be loaded. Controls: pad (D-pad, A/B/Start to
+boot, Select to re-read the card), PS/2 keyboard (arrows, PgUp/PgDn, Home/End, Enter, R)
+or the UART terminal (w/s or arrows, Enter, `r`, or the entry number + Enter).
 
 ## Memory map
 
