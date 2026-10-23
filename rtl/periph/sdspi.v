@@ -1,16 +1,16 @@
 // ============================================================================
-// sdspi.v - Tarjeta SD en modo SPI con transferencia de bloques por hardware
-//   +0x000 CTRL   RW [0] CS activo (pin a 0), [15:8] divisor:
-//                    f_sck = f_clk / (2 * (DIV + 1))   (400 kHz para iniciar,
-//                    luego DIV = 1 -> ~25 MHz)
-//   +0x004 DATA   W: envía un byte (y recibe otro); R: último byte recibido
-//   +0x008 STAT   R: [0] ocupado, [1] el último bloque terminó por timeout,
-//                    [2] tarjeta presente (DAT3 con pull-up: no fiable)
-//   +0x00C BLOCK  W: 1 = leer bloque: envía 0xFF hasta recibir el token 0xFE
-//                    (máx. 65536 bytes), lee 512 bytes al buffer + 2 de CRC
-//                    2 = escribir bloque: envía 0xFE, los 512 bytes del buffer
-//                    y 2 bytes de CRC ficticio (la respuesta la lee el software)
-//   +0x200..0x3FF BUF  buffer de 512 bytes (palabras little-endian, R/W)
+// sdspi.v - SD card in SPI mode with hardware block transfers
+//   +0x000 CTRL   RW [0] CS active (pin at 0), [15:8] divider:
+//                    f_sck = f_clk / (2 * (DIV + 1))   (400 kHz for init,
+//                    then DIV = 1 -> ~25 MHz)
+//   +0x004 DATA   W: sends a byte (and receives another); R: last byte received
+//   +0x008 STAT   R: [0] busy, [1] the last block ended on timeout,
+//                    [2] card present (DAT3 with pull-up: unreliable)
+//   +0x00C BLOCK  W: 1 = read block: sends 0xFF until the 0xFE token arrives
+//                    (max. 65536 bytes), reads 512 bytes into the buffer + 2 CRC
+//                    2 = write block: sends 0xFE, the 512 buffer bytes
+//                    and 2 dummy CRC bytes (software reads the response)
+//   +0x200..0x3FF BUF  512-byte buffer (little-endian words, R/W)
 // ============================================================================
 `default_nettype none
 module sdspi (
@@ -32,23 +32,23 @@ module sdspi (
     reg        tout;
     assign sd_cs_n = ~cs;
 
-    // buffer de 128 palabras
+    // 128-word buffer
     reg [31:0] buf_m [0:127];
     reg        bw_e;
     reg [6:0]  bw_a;
     reg [31:0] bw_d;
-    reg [6:0]  br_a;                // puntero de lectura de la escritura de bloque
+    reg [6:0]  br_a;                // read pointer for block writes
     reg [31:0] br_q;
     reg [2:0]  bs;
     wire       blk_wr = (bs == 3'd4) || (bs == 3'd5);
-    wire [6:0] br_ra = blk_wr ? br_a : a[8:2];   // la CPU lee con su propia dirección
+    wire [6:0] br_ra = blk_wr ? br_a : a[8:2];   // the CPU reads with its own address
     always @(posedge clk) begin
         if (bw_e) buf_m[bw_a] <= bw_d;
         br_q <= buf_m[br_ra];
     end
 
-    // ---------------------------------------------------------------- byte SPI
-    reg        x_go;                // inicio de un byte
+    // ---------------------------------------------------------------- SPI byte
+    reg        x_go;                // start of a byte
     reg [7:0]  x_tx;
     reg        x_busy;
     reg [7:0]  x_sh;
@@ -75,7 +75,7 @@ module sdspi (
             else begin
                 x_cnt <= div;
                 if (!sd_clk) begin
-                    // flanco de subida: muestrear MISO
+                    // rising edge: sample MISO
                     sd_clk <= 1'b1;
                     x_sh   <= {x_sh[6:0], miso_s[1]};
                 end else begin
@@ -92,13 +92,13 @@ module sdspi (
         end
     end
 
-    // ---------------------------------------------------------------- secuenciador
+    // ---------------------------------------------------------------- sequencer
     localparam B_IDLE = 3'd0, B_BYTE = 3'd1, B_TOK = 3'd2, B_RD = 3'd3, B_WTOK = 3'd4,
                B_WR = 3'd5, B_CRC = 3'd6;
     reg [9:0]  bcnt;
     reg [15:0] tcnt;
     reg [31:0] wacc;
-    reg        wpend;               // esperando un x_done
+    reg        wpend;               // waiting for an x_done
 
     wire bus_wr = sel & we;
     always @(posedge clk) begin
@@ -149,7 +149,7 @@ module sdspi (
                 if (bcnt == 10'd511) begin bcnt <= 10'd0; bs <= B_CRC; end
             end
             B_WTOK: if (x_done) begin
-                // primer byte de datos
+                // first data byte
                 x_tx <= br_q[7:0]; x_go <= 1'b1; bcnt <= 10'd1; bs <= B_WR;
                 br_a <= 7'd0;
             end

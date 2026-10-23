@@ -1,5 +1,5 @@
-// font8x8.c - fuente 8x8, página de códigos 850 (extraída de cga80850.fon)
-// 256 caracteres x 8 filas, bit 7 = píxel izquierdo
+// font8x8.c - 8x8 font, code page 850 (extracted from cga80850.fon)
+// 256 characters x 8 rows, bit 7 = leftmost pixel
 #include <stdint.h>
 const uint8_t font8x8[256 * 8] __attribute__((aligned(4))) = {
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

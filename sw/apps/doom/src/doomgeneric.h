@@ -43,7 +43,7 @@ int DG_GetKey(int* pressed, unsigned char* key);
 void DG_SetWindowTitle(const char * title);
 #ifdef BLTFAST
 struct color;
-void DG_SetPalette(const struct color *colors);   // 256 colores con la gamma aplicada
+void DG_SetPalette(const struct color *colors);   // 256 colors with gamma applied
 #endif
 
 #ifdef __cplusplus

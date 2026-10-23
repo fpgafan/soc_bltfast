@@ -158,7 +158,7 @@ byte *I_ZoneBase (int *size)
 #ifdef BLTFAST
     if (p <= 0)
     {
-        // bltfast: toda la memoria libre menos una reserva para malloc
+    // bltfast: all the free memory minus a reserve for malloc
         extern int DG_ZoneSize(void);
         *size = DG_ZoneSize();
         zonemem = malloc(*size);

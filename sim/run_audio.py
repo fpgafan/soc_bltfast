@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-run_audio.py - Prueba del motor de sonido contra un modelo bit-exacto.
+run_audio.py - Test of the sound engine against a bit-exact model.
 
-  python run_audio.py [semilla] [n_muestras] [--vid]
+  python run_audio.py [seed] [n_samples] [--vid]
 
-32 voces con parámetros aleatorios (formatos, bucles, tonos de 0.05x a 6x,
-ADSR, volúmenes) y KEYON/KEYOFF/STOP en momentos aleatorios.
+32 voices with random parameters (formats, loops, pitches from 0.05x to 6x,
+ADSR, volumes) and KEYON/KEYOFF/STOP at random moments.
 """
 import os, sys, random, struct, subprocess
 
@@ -14,7 +14,7 @@ ROOT = os.path.dirname(HERE)
 BUILD = os.path.join(HERE, "build")
 OCS = r"C:\tools\oss-cad-suite"
 os.environ["PATH"] = os.pathsep.join([os.path.join(OCS, "bin"), os.path.join(OCS, "lib"), os.environ["PATH"]])
-MEMW = 1 << 18             # palabras inicializadas (1 MB)
+MEMW = 1 << 18             # initialized words (1 MB)
 
 
 def s16(x):
@@ -191,7 +191,7 @@ def main():
             evs.append((k, 0x808, rng.randrange(1 << 32) & rng.randrange(1 << 32)))
         if rng.random() < 0.03:
             evs.append((k, 0x81C, 1 << rng.randrange(32)))
-        if rng.random() < 0.05:                        # cambiar el tono de una voz
+        if rng.random() < 0.05:                        # change the pitch of a voice
             v = rng.randrange(32)
             evs.append((k, v * 32 + 16, rng.randrange(0x800, 0x40000)))
     evs.sort(key=lambda e: e[0])
@@ -214,7 +214,7 @@ def main():
     r = subprocess.run(["vvp", "-n", vvp, "+ev=aud_ev.txt", "+init=aud_init.hex",
                         "+out=aud_out.txt", f"+n={n}"] + extra, cwd=BUILD, capture_output=True, text=True)
     lines = r.stdout.strip().splitlines()
-    print("\n".join(l for l in lines if "AUDIO" in l or "AVISO" in l)[:2000])
+    print("\n".join(l for l in lines if "AUDIO" in l or "WARNING" in l)[:2000])
     got = []
     for l in open(os.path.join(BUILD, "aud_out.txt")):
         w = int(l, 16)
@@ -222,10 +222,10 @@ def main():
     bad = [k for k in range(n) if k >= len(got) or got[k] != exp[k]]
     if bad:
         k = bad[0]
-        print(f"FAIL: {len(bad)} muestras distintas; primera {k}: rtl={got[k] if k < len(got) else None} ref={exp[k]}")
+        print(f"FAIL: {len(bad)} differing samples; first {k}: rtl={got[k] if k < len(got) else None} ref={exp[k]}")
         sys.exit(1)
     nz = sum(1 for e in exp if e != (0, 0))
-    print(f"PASS semilla={seed} muestras={n} (no nulas: {nz})")
+    print(f"PASS seed={seed} samples={n} (non-zero: {nz})")
 
 
 if __name__ == "__main__":

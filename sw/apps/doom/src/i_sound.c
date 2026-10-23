@@ -132,8 +132,8 @@ static void InitMusicModule(void)
 {
 #ifdef FEATURE_SOUND
 #ifdef BLTFAST
-    // FM como la Sound Blaster (OPL2 por hardware + GENMIDI del WAD) si el
-    // bitstream lo trae; -synth vuelve al sintetizador de lib/midi.c
+        // FM like the Sound Blaster (hardware OPL2 + GENMIDI from the WAD) if the
+        // bitstream has it; -synth falls back to the lib/midi.c synthesizer
     if (!M_CheckParm("-synth") && DG_HaveOPL())
         music_module = &music_opl_module;
     else

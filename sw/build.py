@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-build.py - Compila el software del SoC bltfast.
+build.py - Builds the software for the bltfast SoC.
 
-  python build.py boot                ROM de arranque -> build/boot.hex (8 KB, ROM del bitstream)
-  python build.py boot --bit          + sintetizar el bitstream (gw_sh build.tcl)
-  python build.py boot --bit --prog   + cargarlo en la FPGA (SRAM: se pierde al desconectar)
-  python build.py boot --bit --flash  + grabarlo en la flash (permanente)
-  python build.py --prog              solo cargar en la FPGA el .fs actual
-  python build.py <app>               apps/<app>/*.c + lib -> build/<app>.bin (en 0x4000_0000)
-  python build.py doom                Doom (apps/doom, con newlib) -> build/doom.bin
-  python build.py <app> --run         compila, carga por UART (tools/load.py) y abre el terminal
-  python build.py --src <archivo> --run
-                                      si el archivo está en apps/<app>/, compila esa app;
-                                      si no, compila ese .c suelto con la biblioteca
-  --port COMx                         puerto serie (por defecto se autodetecta)
+  python build.py boot                boot ROM -> build/boot.hex (8 KB, bitstream ROM)
+  python build.py boot --bit          + synthesize the bitstream (gw_sh build.tcl)
+  python build.py boot --bit --prog   + load it into the FPGA (SRAM: lost on power-off)
+  python build.py boot --bit --flash  + write it to flash (permanent)
+  python build.py --prog              only load the current .fs into the FPGA
+  python build.py <app>               apps/<app>/*.c + lib -> build/<app>.bin (at 0x4000_0000)
+  python build.py doom                Doom (apps/doom, with newlib) -> build/doom.bin
+  python build.py <app> --run         builds, loads over UART (tools/load.py) and opens the terminal
+  python build.py --src <file> --run
+                                      if the file is in apps/<app>/, builds that app;
+                                      otherwise builds that loose .c with the library
+  --port COMx                         serial port (auto-detected by default)
 """
 import os, sys, subprocess, glob, struct, argparse
 
@@ -53,7 +53,7 @@ def build_boot():
                 os.path.join(HERE, "boot", "boot.ld"), "-Os -DBOOTROM")
     data = open(binf, "rb").read()
     if len(data) > 8192:
-        print(f"ERROR: la ROM ocupa {len(data)} bytes (> 8192)"); sys.exit(1)
+        print(f"ERROR: the ROM takes {len(data)} bytes (> 8192)"); sys.exit(1)
     data += b"\x13\x00\x00\x00" * ((8192 - len(data)) // 4)
     with open(os.path.join(B, "boot.hex"), "w") as f:
         for i in range(0, 8192, 4):
@@ -71,7 +71,7 @@ def build_app(name, srcs):
 
 
 def build_doom():
-    """apps/doom: doomgeneric (src/) + capa bltfast, con newlib. Objetos en build/doom/."""
+    """apps/doom: doomgeneric (src/) + bltfast layer, with newlib. Objects in build/doom/."""
     from concurrent.futures import ThreadPoolExecutor
     d = os.path.join(HERE, "apps", "doom")
     ob = os.path.join(B, "doom")
@@ -79,7 +79,7 @@ def build_doom():
     arch = ["-march=rv32im_zicsr_zifencei", "-mabi=ilp32", "-g", "-ffunction-sections", "-fdata-sections"]
     inc = ["-I" + os.path.join(HERE, "lib"), "-I" + os.path.join(d, "src")]
     defs = ["-DBLTFAST", "-DFEATURE_SOUND", "-D_DEFAULT_SOURCE"]
-    # la biblioteca del SoC trae su propio printf: se renombra para no chocar con newlib
+    # the SoC library has its own printf: it is renamed to avoid clashing with newlib
     libf = arch + inc + ["-O2", "-Wall", "-Wextra", "-Wno-unused-parameter", "-ffreestanding",
                          "-fno-builtin", "-Dprintf=lib_printf"]
     jobs = [(os.path.join(HERE, "lib", f), libf) for f in
@@ -105,7 +105,7 @@ def build_doom():
         if msg: print(msg)
     objs = [o for o, _ in res]
     if not all(os.path.exists(o) for o in objs):
-        sys.exit("ERROR de compilación")
+        sys.exit("ERROR: compilation failed")
     elf = os.path.join(B, "doom.elf")
     run(["riscv-none-elf-gcc"] + arch + ["-nostartfiles", "-nostdlib"] + objs +
         ["-T" + os.path.join(HERE, "lib", "app.ld"), "-Wl,--gc-sections", "-Wl,-Map," + os.path.join(B, "doom.map"),
@@ -124,13 +124,13 @@ def app_sources(name):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("what", nargs="?", help="boot o el nombre de una app de apps/")
-    ap.add_argument("--src", help="archivo abierto: su app de apps/ o un .c suelto")
-    ap.add_argument("--run", action="store_true", help="cargar por UART y abrir el terminal")
-    ap.add_argument("--port", help="puerto serie (COMx)")
-    ap.add_argument("--bit", action="store_true", help="boot: sintetizar el bitstream")
-    ap.add_argument("--prog", action="store_true", help="cargar el bitstream en la FPGA (SRAM)")
-    ap.add_argument("--flash", action="store_true", help="grabar el bitstream en la flash")
+    ap.add_argument("what", nargs="?", help="boot or the name of an app in apps/")
+    ap.add_argument("--src", help="open file: its app in apps/ or a loose .c")
+    ap.add_argument("--run", action="store_true", help="load over UART and open the terminal")
+    ap.add_argument("--port", help="serial port (COMx)")
+    ap.add_argument("--bit", action="store_true", help="boot: synthesize the bitstream")
+    ap.add_argument("--prog", action="store_true", help="load the bitstream into the FPGA (SRAM)")
+    ap.add_argument("--flash", action="store_true", help="write the bitstream to flash")
     a = ap.parse_args()
 
     binf = None
@@ -143,25 +143,25 @@ def main():
     elif a.src:
         src = os.path.abspath(a.src)
         if not os.path.isfile(src):
-            sys.exit(f"no existe: {a.src}")
+            sys.exit(f"not found: {a.src}")
         rel = os.path.relpath(src, os.path.join(HERE, "apps")).split(os.sep)
         if len(rel) > 1 and rel[0] != "..":
-            binf = build_app(rel[0], app_sources(rel[0]))          # archivo de una app
+            binf = build_app(rel[0], app_sources(rel[0]))          # file of an app
         elif src.endswith((".c", ".S")):
             binf = build_app(os.path.splitext(os.path.basename(src))[0], [src])
         else:
-            sys.exit(f"no sé compilar {a.src} (abre un .c)")
+            sys.exit(f"don't know how to build {a.src} (open a .c)")
     elif a.what:
         srcs = app_sources(a.what)
         if not srcs:
-            sys.exit("no existe apps/" + a.what)
+            sys.exit("apps/" + a.what + " does not exist")
         binf = build_app(a.what, srcs)
     elif not (a.prog or a.flash):
         print(__doc__); sys.exit(1)
 
     if a.prog or a.flash:
         if not os.path.exists(FS):
-            sys.exit(f"no existe {FS} (python build.py boot --bit)")
+            sys.exit(f"{FS} does not exist (python build.py boot --bit)")
         run([os.path.join(GOWIN, "Programmer", "bin", "programmer_cli.exe"),
              "--device", "GW2AR-18C", "--operation_index", "9" if a.flash else "2", "--fsFile", FS],
             cwd=os.path.join(GOWIN, "Programmer", "bin"))

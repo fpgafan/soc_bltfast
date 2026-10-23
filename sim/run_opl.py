@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-run_opl.py - Prueba del OPL2 (rtl/audio/opl2.v) contra el modelo bit-exacto
-(sim/oplmodel.py, validado contra Nuked-OPL3).
+run_opl.py - Test of the OPL2 (rtl/audio/opl2.v) against the bit-exact model
+(sim/oplmodel.py, validated against Nuked-OPL3).
 
-  python run_opl.py [semilla] [n_muestras] [--musical]
+  python run_opl.py [seed] [n_samples] [--musical]
 
-Por defecto escribe registros al azar (todas las combinaciones); con
---musical toca notas con instrumentos razonables (envolventes audibles,
-vibrato, trémolo, realimentación) para ejercitar las fases lentas.
-La ganancia se deja en 0x40 (1.0) para comparar con la salida del chip.
+By default it writes random registers (every combination); with
+--musical it plays notes with reasonable instruments (audible envelopes,
+vibrato, tremolo, feedback) to exercise the slow phases.
+The gain is left at 0x40 (1.0) to compare with the chip's output.
 """
 import os, sys, random, subprocess
 from oplmodel import OPL2
@@ -81,9 +81,9 @@ def main():
     musical = "--musical" in sys.argv
     rng = random.Random(seed)
     ev = gen_musical(rng, n) if musical else gen_random(rng, n)
-    ev = [(0, 0x100, 0x40)] + ev                         # ganancia 1.0 (registro +0x400)
+    ev = [(0, 0x100, 0x40)] + ev                         # gain 1.0 (register +0x400)
     os.makedirs(BUILD, exist_ok=True)
-    tag = "%s%d" % ("m" if musical else "r", seed)       # nombres propios: se pueden lanzar en paralelo
+    tag = "%s%d" % ("m" if musical else "r", seed)       # unique names: they can run in parallel
     fev = os.path.join(BUILD, "opl_ev_%s.txt" % tag)
     fout = os.path.join(BUILD, "opl_out_%s.txt" % tag)
     with open(fev, "w") as f:
@@ -108,9 +108,9 @@ def main():
         if k >= len(hw) or hw[k] != y:
             bad += 1
             if bad <= 10:
-                print("muestra %d: RTL %s modelo %04x" % (k, "%04x" % hw[k] if k < len(hw) else "-", y))
-    print("OPL2 %s semilla %d: %d muestras (%d no nulas), %d distintas -> %s"
-          % ("musical" if musical else "aleatorio", seed, n, nz, bad, "BIEN" if bad == 0 else "MAL"))
+                print("sample %d: RTL %s model %04x" % (k, "%04x" % hw[k] if k < len(hw) else "-", y))
+    print("OPL2 %s seed %d: %d samples (%d non-zero), %d differing -> %s"
+          % ("musical" if musical else "random", seed, n, nz, bad, "OK" if bad == 0 else "BAD"))
     sys.exit(1 if bad else 0)
 
 

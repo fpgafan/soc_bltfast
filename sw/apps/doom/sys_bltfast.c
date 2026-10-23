@@ -1,9 +1,9 @@
 // ============================================================================
-// sys_bltfast.c - Llamadas al sistema de newlib para Doom: stdout/stderr por
-// la UART, ficheros en el directorio raíz de la microSD (FAT, nombres 8.3) y
-// montón (malloc) entre el final del programa y la pila.
+// sys_bltfast.c - newlib system calls for Doom: stdout/stderr over
+// the UART, files in the root directory of the microSD (FAT, 8.3 names) and
+// heap (malloc) between the end of the program and the stack.
 //
-//  Las rutas se reducen a su nombre: "./.savegame/doomsav0.dsg" -> DOOMSAV0.DSG
+//  Paths are reduced to their name: "./.savegame/doomsav0.dsg" -> DOOMSAV0.DSG
 // ============================================================================
 #include <errno.h>
 #include <fcntl.h>
@@ -18,10 +18,10 @@
 #undef printf
 
 #define STACK_SIZE (256u << 10)
-#define HEAP_LIMIT (0x40600000u - STACK_SIZE)    // la pila baja desde 0x4060_0000
-#define MALLOC_RESERVE (512u << 10)               // para malloc fuera de la zona de Doom
+#define HEAP_LIMIT (0x40600000u - STACK_SIZE)    // the stack grows down from 0x4060_0000
+#define MALLOC_RESERVE (512u << 10)               // for malloc outside Doom's zone
 
-// ---------------------------------------------------------------- montón
+// ---------------------------------------------------------------- heap
 extern char _end[];
 static char *brk_ptr = _end;
 
@@ -33,15 +33,15 @@ void *_sbrk(ptrdiff_t incr)
     return old;
 }
 
-// tamaño de la zona de Doom: toda la memoria libre menos la reserva
+// size of Doom's zone: all the free memory minus the reserve
 int DG_ZoneSize(void)
 {
     uint32_t top = ((uint32_t)brk_ptr + 15) & ~15u;
     return (int)((HEAP_LIMIT - top - MALLOC_RESERVE) & ~0xFFFFu);
 }
 
-// ---------------------------------------------------------------- consola
-// las últimas líneas de stderr se guardan para mostrarlas en pantalla al salir
+// ---------------------------------------------------------------- console
+// the last stderr lines are kept to show them on screen at exit
 char sys_errbuf[512];
 static int errlen;
 
@@ -55,12 +55,12 @@ static void errlog(char c)
     sys_errbuf[errlen] = 0;
 }
 
-// ---------------------------------------------------------------- ficheros
+// ---------------------------------------------------------------- files
 #define MAXF 8
 #define FD0  3
 static struct { int used, wr; fat_file f; uint32_t *map; } fd_tab[MAXF];
 
-// ruta -> nombre 8.3 ("NOMBRE  EXT"); -1 si no hay nombre
+// path -> 8.3 name ("NAME    EXT"); -1 if there is no name
 static int name83(const char *path, char out[11])
 {
     const char *b = path;
@@ -115,7 +115,7 @@ int _open(const char *path, int flags, int mode)
     fd_tab[i].used = 1;
     fd_tab[i].wr = acc != O_RDONLY;
     fd_tab[i].map = 0;
-    // ficheros grandes de solo lectura (WAD): tabla de clusters para saltar rápido
+    // large read-only files (WAD): cluster table for fast seeking
     if (acc == O_RDONLY && f->size > 65536) {
         uint32_t nc = f->size / fat_cluster_bytes() + 1;
         fd_tab[i].map = malloc(nc * 4);
@@ -170,7 +170,7 @@ off_t _lseek(int fd, off_t off, int whence)
     int32_t pos = whence == SEEK_SET ? (int32_t)off :
                   whence == SEEK_CUR ? (int32_t)f->pos + (int32_t)off : (int32_t)f->size + (int32_t)off;
     if (pos < 0) { errno = EINVAL; return -1; }
-    fat_seek(f, (uint32_t)pos);                  // más allá del final: se queda al final
+    fat_seek(f, (uint32_t)pos);                  // past the end: stays at the end
     return (off_t)f->pos;
 }
 
@@ -213,7 +213,7 @@ int rename(const char *from, const char *to)
 }
 
 int _link(const char *a, const char *b) { (void)a; (void)b; errno = EMLINK; return -1; }
-int mkdir(const char *path, mode_t mode) { (void)path; (void)mode; return 0; }  // todo en el raíz
+int mkdir(const char *path, mode_t mode) { (void)path; (void)mode; return 0; }  // everything in the root
 int _getpid(void) { return 1; }
 int _kill(int pid, int sig) { (void)pid; (void)sig; errno = EINVAL; return -1; }
 

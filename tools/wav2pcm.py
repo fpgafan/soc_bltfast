@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-wav2pcm.py - Convierte un WAV a PCM crudo para el motor de sonido.
+wav2pcm.py - Converts a WAV into raw PCM for the sound engine.
 
-  python wav2pcm.py entrada.wav salida.raw [--8bit] [--mono] [--c nombre]
+  python wav2pcm.py input.wav output.raw [--8bit] [--mono] [--c name]
 
-Salida: 16 bits con signo (o 8 bits con --8bit), mono o estéreo intercalado
-(L,R), a la frecuencia original (el motor la ajusta con el PITCH:
-pitch = rate * 65536 / 48000). Imprime la frecuencia y el número de tramas.
+Output: signed 16 bits (or 8 bits with --8bit), mono or interleaved stereo
+(L,R), at the original rate (the engine adjusts it with PITCH:
+pitch = rate * 65536 / 48000). Prints the rate and the number of frames.
 """
 import sys, wave, struct, argparse
 
@@ -45,7 +45,7 @@ def main():
     fmt = ("S8" if a.b8 else "S16") + ("ST" if len(frames[0]) == 2 else "")
     if a.c:
         with open(a.out + ".c", "w") as f:
-            f.write(f"#include <stdint.h>\n// formato AUD_FMT_{fmt}, {rate} Hz\n")
+            f.write(f"#include <stdint.h>\n// format AUD_FMT_{fmt}, {rate} Hz\n")
             f.write(f"const uint32_t {a.c}_frames = {n}, {a.c}_rate = {rate};\n")
             f.write(f"const uint8_t {a.c}[{len(out)}] __attribute__((aligned(4))) = {{\n")
             for i in range(0, len(out), 24):
@@ -53,7 +53,7 @@ def main():
             f.write("};\n")
     else:
         open(a.out, "wb").write(out)
-    print(f"{n} tramas, {rate} Hz, formato AUD_FMT_{fmt}, {len(out)} bytes")
+    print(f"{n} frames, {rate} Hz, format AUD_FMT_{fmt}, {len(out)} bytes")
 
 
 if __name__ == "__main__":

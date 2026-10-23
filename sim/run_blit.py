@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-run_blit.py - Prueba aleatoria del blitter contra un modelo de referencia.
+run_blit.py - Random test of the blitter against a reference model.
 
-  python run_blit.py [semilla] [n_comandos] [--vid]
+  python run_blit.py [seed] [n_commands] [--vid]
 
-Genera comandos aleatorios (FILL, BLIT con escalado/espejo/transparencia/
-paleta, EXPAND 1 bpp, LINE) con recorte, los ejecuta en el RTL (Icarus) y
-compara el 1er MB de SDRAM con el modelo byte a byte.
+Generates random commands (FILL, BLIT with scaling/mirroring/transparency/
+palette, EXPAND 1 bpp, LINE) with clipping, runs them on the RTL (Icarus) and
+compares the first MB of SDRAM with the model byte by byte.
 """
 import os, sys, random, subprocess, struct
 
@@ -18,7 +18,7 @@ os.environ["PATH"] = os.pathsep.join([os.path.join(OCS, "bin"), os.path.join(OCS
 os.makedirs(BUILD, exist_ok=True)
 
 MEMB = 1 << 23
-REGION = 1 << 20           # se compara el primer MB
+REGION = 1 << 20           # the first MB is compared
 
 
 def s32(x):
@@ -144,7 +144,7 @@ def gen(rng, n):
                 u0, v0 = rng.randrange(0, 200 << 16), rng.randrange(0, 50 << 16)
             if op == 2:
                 du = rng.choice([0x10000, 0x10000, 0x8000, 0x20000, -0x10000])
-            # limitar el span de origen a 2044 bytes
+            # limit the source span to 2044 bytes
             span = abs(du) * w >> 16
             if op == 2:
                 span >>= 3
@@ -162,7 +162,7 @@ def gen(rng, n):
         else:
             r[10], r[11], r[12], r[13] = 0, 0, 0x10000, 0x10000
         if op == 3:
-            w, h = rng.randrange(-60, 700), rng.randrange(-60, 320)    # extremo
+            w, h = rng.randrange(-60, 700), rng.randrange(-60, 320)    # extreme
         r[7] = (dx & 0xFFFF) | ((dy & 0xFFFF) << 16)
         r[8] = (w & 0xFFFF) | ((h & 0xFFFF) << 16)
         r[9] = rng.randrange(1 << 32)
@@ -226,10 +226,10 @@ def main():
         got += struct.pack("<I", int(line, 16))
     bad = [i for i in range(REGION) if got[i] != model.m[i]]
     if bad:
-        print(f"FAIL: {len(bad)} bytes distintos; primeros:",
+        print(f"FAIL: {len(bad)} differing bytes; first ones:",
               ", ".join(f"{b:#x}: rtl={got[b]:02x} ref={model.m[b]:02x}" for b in bad[:8]))
         sys.exit(1)
-    print(f"PASS semilla={seed} comandos={n}")
+    print(f"PASS seed={seed} commands={n}")
 
 
 if __name__ == "__main__":

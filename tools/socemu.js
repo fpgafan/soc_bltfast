@@ -1,6 +1,6 @@
-// socemu.js - emulador funcional del SoC bltfast (RV32IM + periféricos básicos)
-// uso: node socemu.js prog.bin sd.img [--frames N] [--shots 100,200] [--keys "t:code,..."] [--out dir]
-//      [--oplwav f.wav]  graba la salida del OPL2 (música FM) en un WAV mono
+// socemu.js - functional emulator of the bltfast SoC (RV32IM + basic peripherals)
+// usage: node socemu.js prog.bin sd.img [--frames N] [--shots 100,200] [--keys "t:code,..."] [--out dir]
+//      [--oplwav f.wav]  records the OPL2 output (FM music) into a mono WAV
 'use strict';
 const fs = require('fs');
 const zlib = require('zlib');
@@ -32,7 +32,7 @@ let diskDirty = false;
 
 const x = new Int32Array(32);
 let pc = 0x40000000 | 0;
-let cycles = 0;           // = instrucciones (1 ciclo cada una)
+let cycles = 0;           // = instructions (1 cycle each)
 const CPU_HZ = 90000000, FRAME_CYC = Math.round(CPU_HZ / 60);
 let misal = 0, misalPCs = new Map();
 
@@ -40,7 +40,7 @@ let misal = 0, misalPCs = new Map();
 let mstatus = 0, mie = 0, mtvec = 0, mepc = 0, mcause = 0, mtval = 0, mscratch = 0;
 let mtimecmp = 0xFFFFFFFFFFFFn, mtimecmpLo = 0xFFFFFFFF, mtimecmpHi = 0xFFFFFFFF;
 
-// periféricos
+// peripherals
 let uartOut = '', sysScratch = 0;
 let vidFb = 0, vidFbShown = 0, vidPending = 0, vidCtrl = 0, vidStride = 640, frame = 0;
 const pal = new Uint32Array(256);
@@ -83,7 +83,7 @@ function blitExec(cmd) {
   const W = blt[8] & 0xFFFF, H = blt[8] >>> 16;
   const col = blt[9], fg = col & 255, bg = (col >> 8) & 255, kc = (col >> 16) & 255, po = (col >>> 24) & 255;
   const u0 = blt[10] | 0, v0 = blt[11] | 0, du = blt[12] | 0, dvv = blt[13] | 0;
-  if (op === 3) return;      // LINE: no se usa
+  if (op === 3) return;      // LINE: not used
   for (let j = 0; j < H; j++) {
     const dy = Y + j;
     if (dy < cy0 || dy >= cy1) continue;
@@ -112,7 +112,7 @@ function blitExec(cmd) {
 
 function mtime() { return BigInt(cycles); }
 
-// OPL2: las escrituras se guardan con su ciclo y la música se calcula al final
+// OPL2: writes are stored with their cycle and the music is computed at the end
 const OPL_DIV = Math.round(CPU_HZ / 49716);
 let oplGain = 0x80, oplWrites = 0;
 const oplLog = [];
@@ -135,7 +135,7 @@ function oplRender(file) {
   pcm.writeUInt32LE(rate, 24); pcm.writeUInt32LE(rate * 2, 28); pcm.writeUInt16LE(2, 32); pcm.writeUInt16LE(16, 34);
   pcm.write('data', 36); pcm.writeUInt32LE(n * 2, 40);
   fs.writeFileSync(file, pcm);
-  console.error(`OPL2: ${(n / rate).toFixed(1)} s en ${file}, pico ${peak}`);
+  console.error(`OPL2: ${(n / rate).toFixed(1)} s in ${file}, peak ${peak}`);
 }
 
 function ioLoad(a) {
@@ -153,8 +153,8 @@ function ioLoad(a) {
     }
   }
   if (a >= 0x80001000 && a < 0x80002000) {
-    if ((a & 0xFF) === 0x04) return 2;   // TX libre e inactivo
-    return 0;                            // sin datos recibidos
+    if ((a & 0xFF) === 0x04) return 2;   // TX free and idle
+    return 0;                            // no received data
   }
   if (a >= 0x80002000 && a < 0x80003000) {
     switch (a & 0xFF) {
@@ -192,7 +192,7 @@ function ioLoad(a) {
     if ((a & 0xFF) === 0) return ps2q.length ? (0x100 | ps2q.shift()) : 0;
     return 0;
   }
-  throw new Error('lectura E/S ' + a.toString(16) + ' pc=' + (pc >>> 0).toString(16));
+  throw new Error('I/O read ' + a.toString(16) + ' pc=' + (pc >>> 0).toString(16));
 }
 
 function ioStore(a, v) {
@@ -235,20 +235,20 @@ function ioStore(a, v) {
     else if (o === 0x004) sdRx = sdByte(v & 255);
     else if (o === 0x00C) {
       if (v === 1) {
-        if (sdPendR < 0) throw new Error('BLOCK sin CMD17');
+        if (sdPendR < 0) throw new Error('BLOCK without CMD17');
         sdTout = 0;
-        if (opt.sdslow) {   // tarjeta lenta: el token llega tras opt.sdslow bytes (> 65536: timeout del hardware)
+        if (opt.sdslow) {   // slow card: the token arrives after opt.sdslow bytes (> 65536: hardware timeout)
           const wait = opt.sdslow - 65536;
           if (wait > 0) { sdTout = 1; sdResp = new Array(wait).fill(0xFF).concat([0xFE], [...disk.subarray(sdPendR * 512, sdPendR * 512 + 512)], [0x12, 0x34]); sdPendR = -1; slowReads++; return; }
         }
         sdBuf.set(disk.subarray(sdPendR * 512, sdPendR * 512 + 512)); sdPendR = -1;
       }
-      else if (v === 2) { if (sdPendW < 0) throw new Error('BLOCK sin CMD24'); disk.set(sdBuf, sdPendW * 512); diskDirty = true; sdPendW = -1; sdResp = [0x05, 0x00, 0xFF]; }
+      else if (v === 2) { if (sdPendW < 0) throw new Error('BLOCK without CMD24'); disk.set(sdBuf, sdPendW * 512); diskDirty = true; sdPendW = -1; sdResp = [0x05, 0x00, 0xFF]; }
     } else if (o >= 0x200) { sdBuf[o - 0x200] = v; sdBuf[o - 0x1FF] = v >> 8; sdBuf[o - 0x1FE] = v >> 16; sdBuf[o - 0x1FD] = v >> 24; }
     return;
   }
   if (a >= 0x80007000 && a < 0x80009000) return;
-  throw new Error('escritura E/S ' + a.toString(16) + ' pc=' + (pc >>> 0).toString(16));
+  throw new Error('I/O write ' + a.toString(16) + ' pc=' + (pc >>> 0).toString(16));
 }
 
 function memIdx(a) {
@@ -265,7 +265,7 @@ function ld(a, n, sgn) {
   const i = memIdx(a);
   if (i < 0) {
     if ((a >>> 0) >= 0x80000000) { const v = ioLoad(a); return n === 4 ? v | 0 : n === 2 ? (sgn ? v << 16 >> 16 : v & 0xFFFF) : (sgn ? v << 24 >> 24 : v & 255); }
-    throw new Error('lectura ' + (a >>> 0).toString(16) + ' pc=' + (pc >>> 0).toString(16));
+    throw new Error('read ' + (a >>> 0).toString(16) + ' pc=' + (pc >>> 0).toString(16));
   }
   if (a & (n - 1)) noteMisal(a);
   if (n === 4) return dv.getInt32(i, true);
@@ -276,7 +276,7 @@ function st(a, v, n) {
   const i = memIdx(a);
   if (i < 0) {
     if ((a >>> 0) >= 0x80000000) return ioStore(a, n === 4 ? v : n === 2 ? v & 0xFFFF : v & 255);
-    throw new Error('escritura ' + (a >>> 0).toString(16) + ' pc=' + (pc >>> 0).toString(16));
+    throw new Error('write ' + (a >>> 0).toString(16) + ' pc=' + (pc >>> 0).toString(16));
   }
   if (a & (n - 1)) noteMisal(a);
   if (n === 4) dv.setInt32(i, v, true);
@@ -337,7 +337,7 @@ function run() {
   let flips = 0, lastFb = 0;
   const keys = opt.keys.slice(), pads = opt.pads.slice();
   for (;;) {
-    // bloque de instrucciones hasta el siguiente evento
+    // block of instructions up to the next event
     const lim = Math.min(nextFrame, cycles + 20000);
     while (cycles < lim) {
       const i = dv.getInt32((pc & 0x7FFFFF), true);
@@ -425,7 +425,7 @@ function run() {
           if (rd) x[rd] = old;
           break;
         }
-        default: throw new Error('instrucción ' + (i >>> 0).toString(16) + ' pc=' + (pc >>> 0).toString(16));
+        default: throw new Error('instruction ' + (i >>> 0).toString(16) + ' pc=' + (pc >>> 0).toString(16));
       }
       if (prof && (cycles & 127) === 0) prof.push(pc >>> 0);
       pc = npc;
@@ -453,11 +453,11 @@ function run() {
 
 try { run(); }
 catch (e) { console.error('\n*** ' + e.message); }
-console.error(`lecturas lentas: ${slowReads}`);
-console.error(`notas de música: ${keyMus}, efectos: ${keySfx}, escrituras OPL2: ${oplWrites}`);
+console.error(`slow reads: ${slowReads}`);
+console.error(`music notes: ${keyMus}, effects: ${keySfx}, OPL2 writes: ${oplWrites}`);
 if (opt.oplwav) oplRender(opt.oplwav);
-console.error(`\nfin: frame ${frame}, ${cycles} instrucciones, reset=${reset}, desalineados=${misal}`);
-if (misal) console.error('desalineados por pc:', [...misalPCs.entries()].slice(0, 20));
+console.error(`\nend: frame ${frame}, ${cycles} instructions, reset=${reset}, misaligned=${misal}`);
+if (misal) console.error('misaligned by pc:', [...misalPCs.entries()].slice(0, 20));
 if (diskDirty) fs.writeFileSync(imgf + '.out', disk);
 shot('final.png');
 if (prof) {
@@ -471,6 +471,6 @@ if (prof) {
     h.set(f, (h.get(f) || 0) + 1);
   }
   const tot = prof.length;
-  console.error('perfil (% de instrucciones):');
+  console.error('profile (% of instructions):');
   for (const [f, n] of [...h.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25)) console.error((100 * n / tot).toFixed(1).padStart(6) + '%  ' + f);
 }

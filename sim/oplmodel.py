@@ -1,12 +1,12 @@
 """
-oplmodel.py - Modelo bit-exacto del OPL2 (YM3812) de rtl/audio/opl2.v
+oplmodel.py - Bit-exact model of the OPL2 (YM3812) in rtl/audio/opl2.v
 
-Traducción de la parte OPL2 de Nuked-OPL3 (nukeykt, LGPL 2.1), que reproduce
-el chip ciclo a ciclo: 9 canales de 2 operadores, ondas 0-3 (con WSE),
-vibrato/trémolo, KSL/KSR, realimentación, NTS, DAM/DVB.
-Licencia: LGPL 2.1 (como Nuked-OPL3, ver rtl/audio/LICENSE.nuked-opl3).
-No incluye el modo de ritmo (bit 5 de 0xBD) ni los temporizadores: Doom no
-los usa.
+Port of the OPL2 part of Nuked-OPL3 (nukeykt, LGPL 2.1), which reproduces
+the chip cycle by cycle: 9 two-operator channels, waveforms 0-3 (with WSE),
+vibrato/tremolo, KSL/KSR, feedback, NTS, DAM/DVB.
+License: LGPL 2.1 (like Nuked-OPL3, see rtl/audio/LICENSE.nuked-opl3).
+It does not include rhythm mode (bit 5 of 0xBD) or the timers: Doom does not
+use them.
 """
 
 LOGSIN = [0] * 256
@@ -56,7 +56,7 @@ INCSTEP = [[0, 0, 0, 0], [1, 0, 0, 0], [1, 0, 1, 0], [1, 1, 1, 0]]
 
 
 def slot_off(s):
-    """desplazamiento de registro (0x20+off...) del operador s (0..17)"""
+    """register offset (0x20+off...) of operator s (0..17)"""
     return s + 2 * (s // 6)
 
 
@@ -118,7 +118,7 @@ class OPL2:
     def write(self, reg, val):
         self.regs[reg & 0xFF] = val & 0xFF
 
-    # ---------------------------------------------------------------- operador
+    # ---------------------------------------------------------------- operator
     def process(self, s):
         R = self.regs
         o, ch, op = slot_off(s), slot_ch(s), slot_op(s)
@@ -140,14 +140,14 @@ class OPL2:
             sl = 0x1F
         wf = (rE0 & 3) if wse else 0
 
-        # realimentación
+        # feedback
         if fb:
             fbmod = (self.prout[s] + self.out[s]) >> (9 - fb)
         else:
             fbmod = 0
         self.prout[s] = self.out[s]
 
-        # envolvente
+        # envelope
         ksl = (KSLROM[f_num >> 6] << 2) - ((8 - block) << 5)
         if ksl < 0:
             ksl = 0
@@ -212,7 +212,7 @@ class OPL2:
             gen = 3
         self.eg_gen[s] = gen
 
-        # fase
+        # phase
         if vib:
             rng = (f_num >> 7) & 7
             vp = self.vibpos
@@ -232,14 +232,14 @@ class OPL2:
             self.pg_phase[s] = 0
         self.pg_phase[s] = (self.pg_phase[s] + ((basefreq * MT[mult]) >> 1)) & 0x7FFFF
 
-        # salida
+        # output
         if op == 0:
             mod = fbmod
         else:
             mod = 0 if con else self.out[s - 3]
         self.out[s] = wave(wf, phase_out + mod, eg_out)
 
-    # ---------------------------------------------------------------- muestra
+    # ---------------------------------------------------------------- sample
     def sample(self):
         for s in range(18):
             self.process(s)

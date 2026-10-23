@@ -1,4 +1,4 @@
-// Modelos mínimos de primitivas Gowin para simulación
+// Minimal models of Gowin primitives for simulation
 `timescale 1ns/1ps
 module OSER10 #(parameter GSREN = "false", parameter LSREN = "true") (
     output reg Q, input D0, D1, D2, D3, D4, D5, D6, D7, D8, D9,

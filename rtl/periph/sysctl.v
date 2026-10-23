@@ -1,21 +1,21 @@
 // ============================================================================
-// sysctl.v - Registros de sistema (base 0x8000_0000)
+// sysctl.v - System registers (base 0x8000_0000)
 //   +0x00 ID        R  "BLT1"
-//   +0x04 LED       RW [5:0] (1 = encendido)
-//   +0x08 BTN       R  [1:0] = {S2, S1}, nivel de los pines
-//   +0x0C CLK_HZ    R  frecuencia del reloj del sistema
-//   +0x10 MTIME     RW 64 bits (+0x14 alta), cuenta ciclos
-//   +0x18 MTIMECMP  RW 64 bits (+0x1C alta); MTIP = mtime >= mtimecmp
-//   +0x20 MSIP      RW [0] interrupción software
-//   +0x24 IRQ_PEND  R  fuentes pendientes; W: 1 borra las de flanco
-//   +0x28 IRQ_EN    RW máscara -> MEIP = |(PEND & EN)
-//   +0x2C SDRAM     RW [2:0] latencia de captura, [7:4] fase del reloj
-//                       (pasos de 22,5°), [8] R = SDRAM lista
-//   +0x30 RESET     W  0x5EB007 = reinicio del SoC
-//   +0x34 SCRATCH   RW (sobrevive al reinicio software)
-//   +0x38 MISC      RW [0] amplificador de audio de la placa (PA_EN), por defecto 1
-//   Fuentes de interrupción (bit): ver soc_top.v (irq_lvl = nivel,
-//   irq_edge = pulso que queda pendiente hasta borrarse).
+//   +0x04 LED       RW [5:0] (1 = on)
+//   +0x08 BTN       R  [1:0] = {S2, S1}, pin level
+//   +0x0C CLK_HZ    R  system clock frequency
+//   +0x10 MTIME     RW 64 bits (+0x14 high), counts cycles
+//   +0x18 MTIMECMP  RW 64 bits (+0x1C high); MTIP = mtime >= mtimecmp
+//   +0x20 MSIP      RW [0] software interrupt
+//   +0x24 IRQ_PEND  R  pending sources; W: 1 clears edge-triggered ones
+//   +0x28 IRQ_EN    RW mask -> MEIP = |(PEND & EN)
+//   +0x2C SDRAM     RW [2:0] capture latency, [7:4] clock phase
+//                       (22.5° steps), [8] R = SDRAM ready
+//   +0x30 RESET     W  0x5EB007 = SoC reset
+//   +0x34 SCRATCH   RW (survives a software reset)
+//   +0x38 MISC      RW [0] on-board audio amplifier (PA_EN), default 1
+//   Interrupt sources (bit): see soc_top.v (irq_lvl = level,
+//   irq_edge = pulse that stays pending until cleared).
 // ============================================================================
 `default_nettype none
 module sysctl #(
@@ -70,7 +70,7 @@ module sysctl #(
             mt_l <= mt_l + 32'd1;
             mt_c <= (mt_l == 32'hFFFF_FFFE);
             if (mt_c) mt_h <= mt_h + 32'd1;
-            // comparación en dos etapas (un ciclo de retraso en MTIP)
+            // two-stage compare (one cycle of delay on MTIP)
             cmp_h_gt <= mt_h > mtimecmp[63:32];
             cmp_h_eq <= mt_h == mtimecmp[63:32];
             cmp_l_ge <= mt_l >= mtimecmp[31:0];
@@ -98,7 +98,7 @@ module sysctl #(
         case (a[5:2])
         4'h0: rd <= "BLT1";
         4'h1: rd <= {26'd0, led};
-        4'h2: rd <= {30'd0, b_s1};                    // nivel de los pines (ver README)
+        4'h2: rd <= {30'd0, b_s1};                    // pin level (see README)
         4'h3: rd <= CLK_HZ;
         4'h4: rd <= mtime[31:0];
         4'h5: rd <= mtime[63:32];

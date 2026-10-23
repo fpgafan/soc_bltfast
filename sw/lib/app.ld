@@ -1,8 +1,8 @@
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
-/* Programas: código y datos en la SDRAM desde 0x4000_0000 (6 MB, la pila
-   crece desde 0x4060_0000; los framebuffers van en 0x4060_0000-0x406F_FFFF y
-   0x4070_0000-0x407F_FFFF queda para texturas/samples a elección del programa) */
+/* Programs: code and data in SDRAM from 0x4000_0000 (6 MB, the stack
+   grows down from 0x4060_0000; the framebuffers go at 0x4060_0000-0x406F_FFFF and
+   0x4070_0000-0x407F_FFFF is left for textures/samples as the program chooses) */
 MEMORY { RAM (rwx) : ORIGIN = 0x40000000, LENGTH = 6M }
 SECTIONS {
   .text : { *(.text.start) *(.text*) } > RAM

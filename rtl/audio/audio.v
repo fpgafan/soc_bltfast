@@ -1,43 +1,43 @@
 // ============================================================================
-// audio.v - Motor de sonido: 32 voces wavetable/PCM con DMA desde la SDRAM
+// audio.v - Sound engine: 32 wavetable/PCM voices with DMA from SDRAM
 //
-//  Cada voz reproduce una muestra (8 o 16 bits, mono o estéreo) desde la
-//  SDRAM con paso de tono 16.16 (1.0 = 48 kHz), interpolación lineal,
-//  envolvente ADSR por hardware, volumen L/R y bucle. Sirve igual para notas
-//  MIDI (instrumentos sampleados) que para PCM en streaming (bucle sobre un
-//  buffer circular + evento al dar la vuelta / al terminar).
-//  Las muestras se leen por ráfagas de 32 bytes a una caché de 2 líneas por voz.
-//  Salida: 48 kHz estéreo 16 bits (tick48 viene del reloj de píxel). La
-//  entrada 'ext' (OPL2, mono) se suma a los dos canales antes del volumen general.
+//  Each voice plays a sample (8 or 16 bits, mono or stereo) from
+//  SDRAM with a 16.16 pitch step (1.0 = 48 kHz), linear interpolation,
+//  hardware ADSR envelope, L/R volume and looping. It serves both MIDI
+//  notes (sampled instruments) and streaming PCM (looping over a
+//  ring buffer + event on wrap-around / on end).
+//  Samples are read in 32-byte bursts into a 2-line cache per voice.
+//  Output: 48 kHz stereo 16 bits (tick48 comes from the pixel clock). The
+//  'ext' input (OPL2, mono) is added to both channels before the master volume.
 //
-//  Registros (base 0x8000_5000):
-//   Voz v (solo escritura), +v*0x20:
-//     +0x00 CTRL   [1:0] formato: 0 = 8 bits mono, 1 = 16 bits mono,
-//                        2 = 16 bits estéreo (L,R), 3 = 8 bits estéreo
-//                  [2] bucle, [3] interpolación lineal, [4] evento al acabar/bucle
-//     +0x04 START  dirección en bytes de la muestra 0 (SDRAM)
-//     +0x08 LEN    número de muestras (tramas)
-//     +0x0C LOOP   muestra de inicio del bucle
-//     +0x10 PITCH  incremento por muestra de salida, 16.16
-//     +0x14 VOL    [7:0] izquierdo, [15:8] derecho
-//     +0x18 ADSR   [7:0] ataque, [15:8] caída, [23:16] nivel de sostenido,
-//                  [31:24] relajación. Velocidad r -> incremento por muestra
-//                  (16 + r[3:0]) << r[7:4] sobre una escala de 2^24
-//                  (r = 0: ~21 s ; r = 0xFF: inmediato)
-//   (el estado de las voces no se lee directamente: ver MON_*)
-//   Globales:
-//     0x800 CTRL    [7:0] volumen general (0x80 = 1.0), [8] motor activo
-//     0x804 KEYON   W: máscara -> la voz arranca desde 0 con ataque
-//     0x808 KEYOFF  W: máscara -> fase de relajación
-//     0x80C ACTIVE  R: máscara de voces sonando
-//     0x810 EVENT   R: voces que han dado la vuelta o terminado; W: 1 borra
-//     0x814 IRQ_EN  RW máscara de eventos que generan interrupción
-//     0x818 COUNT   R: muestras de salida generadas
-//     0x81C STOP    W: máscara -> parada inmediata
-//     0x820 LAST    R: última muestra {R, L}
-//     0x824 MON_V   RW voz que se monitoriza
-//     0x828 MON_POS R: posición (muestras) de esa voz
-//     0x82C MON_ENV R: [25:24] fase (0 A, 1 D, 2 S, 3 R), [23:0] envolvente
+//  Registers (base 0x8000_5000):
+//   Voice v (write only), +v*0x20:
+//     +0x00 CTRL   [1:0] format: 0 = 8-bit mono, 1 = 16-bit mono,
+//                        2 = 16-bit stereo (L,R), 3 = 8-bit stereo
+//                  [2] loop, [3] linear interpolation, [4] event on end/loop
+//     +0x04 START  byte address of sample 0 (SDRAM)
+//     +0x08 LEN    number of samples (frames)
+//     +0x0C LOOP   loop start sample
+//     +0x10 PITCH  increment per output sample, 16.16
+//     +0x14 VOL    [7:0] left, [15:8] right
+//     +0x18 ADSR   [7:0] attack, [15:8] decay, [23:16] sustain level,
+//                  [31:24] release. Rate r -> increment per sample
+//                  (16 + r[3:0]) << r[7:4] on a 2^24 scale
+//                  (r = 0: ~21 s ; r = 0xFF: immediate)
+//   (voice state is not read directly: see MON_*)
+//   Globals:
+//     0x800 CTRL    [7:0] master volume (0x80 = 1.0), [8] engine enabled
+//     0x804 KEYON   W: mask -> the voice starts from 0 with attack
+//     0x808 KEYOFF  W: mask -> release phase
+//     0x80C ACTIVE  R: mask of sounding voices
+//     0x810 EVENT   R: voices that wrapped around or ended; W: 1 clears
+//     0x814 IRQ_EN  RW mask of events that raise an interrupt
+//     0x818 COUNT   R: output samples generated
+//     0x81C STOP    W: mask -> immediate stop
+//     0x820 LAST    R: last sample {R, L}
+//     0x824 MON_V   RW voice being monitored
+//     0x828 MON_POS R: position (samples) of that voice
+//     0x82C MON_ENV R: [25:24] phase (0 A, 1 D, 2 S, 3 R), [23:0] envelope
 // ============================================================================
 `default_nettype none
 module audio (
@@ -50,15 +50,15 @@ module audio (
     output reg  [31:0] rd,
     output wire        irq,
     input  wire        tick48,
-    input  wire signed [15:0] ext,       // otra fuente (OPL2) que se suma a la mezcla
-    // maestro SDRAM (lectura)
+    input  wire signed [15:0] ext,       // another source (OPL2) added to the mix
+    // SDRAM master (read)
     output reg         m_req,
     output reg  [22:2] m_addr,
     output wire [3:0]  m_len,
     input  wire        m_ack,
     input  wire [31:0] m_rdata,
     input  wire        m_rvalid,
-    // salida
+    // output
     output reg         out_valid,
     output reg  [15:0] out_l,
     output reg  [15:0] out_r
@@ -66,17 +66,17 @@ module audio (
     assign m_len = 4'd7;
 
     // =====================================================================
-    // Registros globales
+    // Global registers
     // =====================================================================
     reg [7:0]  mvol;
     reg        en;
     reg [31:0] active, ev, irq_en;
-    reg [31:0] kon_p, koff_p, stop_p;   // peticiones pendientes por voz
+    reg [31:0] kon_p, koff_p, stop_p;   // pending requests per voice
     reg [31:0] count;
     assign irq = |(ev & irq_en);
 
     // =====================================================================
-    // RAM de parámetros: 32 voces x 8 palabras (CPU escribe, motor lee)
+    // Parameter RAM: 32 voices x 8 words (CPU writes, engine reads)
     // =====================================================================
     reg [31:0] pram [0:255];
     reg [7:0]  pr_a;
@@ -87,21 +87,21 @@ module audio (
     end
 
     // =====================================================================
-    // RAM de estado: 32 voces x 4 palabras (motor lee/escribe, CPU lee)
+    // State RAM: 32 voices x 4 words (engine reads/writes, CPU reads)
     // =====================================================================
     reg [31:0] sram  [0:127];
-    reg [6:0]  sr_a;                     // dirección de lectura
-    reg [6:0]  sr_wa;                    // dirección de escritura
+    reg [6:0]  sr_a;                     // read address
+    reg [6:0]  sr_wa;                    // write address
     reg        sr_we;
     reg [31:0] sr_wd, sr_q;
     always @(posedge clk) if (sr_we) sram[sr_wa] <= sr_wd;
     always @(posedge clk) sr_q <= sram[sr_a];
-    // monitor: posición/envolvente de una voz elegida (la CPU no lee la RAM)
+    // monitor: position/envelope of a chosen voice (the CPU does not read the RAM)
     reg [4:0]  mon_v;
     reg [31:0] mon_pos, mon_env;
 
     // =====================================================================
-    // Caché de muestras: 32 voces x 2 líneas x 8 palabras
+    // Sample cache: 32 voices x 2 lines x 8 words
     // =====================================================================
     reg [31:0] cram [0:511];
     reg        cr_we;
@@ -111,7 +111,7 @@ module audio (
         if (cr_we) cram[cr_wa] <= cr_wd;
         cr_q <= cram[cr_ra];
     end
-    // etiquetas: una RAM distribuida por línea (lectura asíncrona por voz)
+    // tags: one distributed RAM per line (asynchronous read per voice)
     reg [18:0] ctag0 [0:31] /* synthesis syn_ramstyle = "distributed_ram" */;
     reg [18:0] ctag1 [0:31] /* synthesis syn_ramstyle = "distributed_ram" */;
     integer ti;
@@ -121,11 +121,11 @@ module audio (
     reg [18:0] tg_d;
 
     // =====================================================================
-    // Bus de registros
+    // Register bus
     // =====================================================================
     reg [31:0] last;
     wire       glb = (a[11] == 1'b1);
-    // las máscaras escritas por la CPU se registran un ciclo
+    // masks written by the CPU are registered for one cycle
     reg  [31:0] kon_set, koff_set, stop_set, ev_clr;
     always @(posedge clk) begin
         kon_set  <= (sel && we && glb && a[7:2] == 6'h01) ? wd : 32'd0;
@@ -152,7 +152,7 @@ module audio (
     end
 
     // =====================================================================
-    // Motor
+    // Engine
     // =====================================================================
     localparam S_IDLE = 5'd0, S_VST = 5'd1, S_RD = 5'd2, S_ADDR = 5'd3, S_TAG = 5'd4,
                S_FETCH = 5'd5, S_CW0 = 5'd6, S_CW1 = 5'd7, S_CW2 = 5'd8, S_M1 = 5'd9,
@@ -160,32 +160,32 @@ module audio (
                S_OUT = 5'd15, S_M4 = 5'd16, S_POS = 5'd17, S_HIT = 5'd18;
     reg [4:0]  st;
     reg [4:0]  v;
-    reg [3:0]  ri;                       // índice de lectura de parámetros
-    // parámetros de la voz
+    reg [3:0]  ri;                       // parameter read index
+    // voice parameters
     reg [4:0]  p_ctrl;
     reg [22:0] p_start;
     reg [23:0] p_len, p_loop;
     reg [31:0] p_pitch;
     reg [7:0]  p_vl, p_vr;
     reg [7:0]  p_ar, p_dr, p_sl, p_rr;
-    // estado
+    // state
     reg [23:0] s_pos;
     reg [15:0] s_frac;
-    reg [1:0]  s_ph;                     // 0 ataque, 1 caída, 2 sostenido, 3 relajación
+    reg [1:0]  s_ph;                     // 0 attack, 1 decay, 2 sustain, 3 release
     reg [23:0] s_env;
-    reg        v_on;                     // la voz suena tras aplicar peticiones
-    // direcciones
-    reg [23:0] f1;                       // índice de la segunda muestra
+    reg        v_on;                     // the voice sounds after applying requests
+    // addresses
+    reg [23:0] f1;                       // index of the second sample
     reg [22:0] ad0, ad1;
-    reg        sl0, sl1;                 // línea de caché usada por cada muestra
-    reg        miss_n;                   // qué muestra falla (0/1)
+    reg        sl0, sl1;                 // cache line used by each sample
+    reg        miss_n;                   // which sample misses (0/1)
     reg [3:0]  fcnt;
     reg        fslot;
     reg [31:0] w0;
     reg [23:0] p_span;                   // LEN - LOOP
-    reg [23:0] s_pm;                     // posición - span
+    reg [23:0] s_pm;                     // position - span
     reg [39:0] pn, pw;
-    // muestras
+    // samples
     reg signed [15:0] l0, r0, l1, r1;
     reg signed [16:0] dl, dr;
     reg signed [33:0] pl, pr;
@@ -195,7 +195,7 @@ module audio (
     reg signed [23:0] acc_l, acc_r;
 
     wire [1:0] fmt = p_ctrl[1:0];
-    // bytes por trama: 8 mono 1, 16 mono 2, 16 estéreo 4, 8 estéreo 2
+    // bytes per frame: 8 mono 1, 16 mono 2, 16 stereo 4, 8 stereo 2
     function [22:0] fofs(input [23:0] f, input [1:0] fm);
         case (fm)
         2'd0:    fofs = f[22:0];
@@ -204,7 +204,7 @@ module audio (
         default: fofs = {f[20:0], 2'b00};
         endcase
     endfunction
-    // extrae {R, L} de la palabra según el formato y la dirección
+    // extracts {R, L} from the word according to the format and the address
     function [31:0] samp(input [31:0] w, input [1:0] ba, input [1:0] fm);
         reg [15:0] h;
         reg [7:0]  b;
@@ -230,11 +230,11 @@ module audio (
     wire [18:0] tag1 = ctag1[v];
     wire [17:0] ln0  = ad0[22:5];
     wire [17:0] ln1  = ad1[22:5];
-    // aciertos registrados (se calculan en S_HIT y se usan en S_CW0)
+    // registered hits (computed in S_HIT and used in S_CW0)
     reg h00, h01, h10, h11;
 
-    reg  [23:0] r_a, r_d, r_r;          // velocidades decodificadas
-    reg  [24:0] env_up, env_dn_d, env_dn_r;   // calculadas en S_M4
+    reg  [23:0] r_a, r_d, r_r;          // decoded rates
+    reg  [24:0] env_up, env_dn_d, env_dn_r;   // computed in S_M4
     wire [23:0] sus = {p_sl, 16'd0};
     wire [39:0] pos_n = {s_pos, s_frac} + {8'd0, p_pitch};
 
@@ -255,7 +255,7 @@ module audio (
             m_req <= 1'b0;
             last <= 32'd0;
         end else begin
-            // peticiones de la CPU (se acumulan; el motor las aplica)
+            // CPU requests (accumulated; the engine applies them)
             kon_p  <= kon_p  | kon_set;
             koff_p <= koff_p | koff_set;
             stop_p <= stop_p | stop_set;
@@ -270,7 +270,7 @@ module audio (
                 acc_l <= {{8{ext[15]}}, ext}; acc_r <= {{8{ext[15]}}, ext};
                 st <= en ? S_VST : S_MIX;
             end
-            // ------------------------------------------------------------ voz
+            // ------------------------------------------------------------ voice
             S_VST: begin
                 if (!(active[v] | kon_p[v])) begin
                     stop_p[v] <= stop_set[v];
@@ -284,7 +284,7 @@ module audio (
                 end
             end
             S_RD: begin
-                // pr_q/sr_q = palabra ri-1
+                // pr_q/sr_q = word ri-1
                 ri   <= ri + 4'd1;
                 pr_a <= {v, ri[2:0] + 3'd1};
                 if (ri < 4'd3) sr_a <= {v, ri[1:0] + 2'd1};
@@ -300,7 +300,7 @@ module audio (
                 endcase
                 if (ri == 4'd8) begin
                     r_a <= rate(p_ar); r_d <= rate(p_dr); r_r <= rate(p_rr);
-                    // aplicar peticiones
+                    // apply requests
                     v_on <= 1'b1;
                     if (kon_p[v]) begin
                         s_pos <= 24'd0; s_frac <= 16'd0; s_env <= 24'd0; s_ph <= 2'd0;
@@ -323,7 +323,7 @@ module audio (
                     active[v] <= 1'b0;
                     st <= S_WB;
                 end else begin
-                    // segunda muestra para la interpolación (bucle o la misma al final)
+                    // second sample for interpolation (loop point or the same one at the end)
                     if (s_pos + 24'd1 >= p_len)
                         f1 <= p_ctrl[2] ? p_loop : s_pos;
                     else
@@ -346,7 +346,7 @@ module audio (
                 st  <= S_CW0;
             end
             S_CW0: begin
-                // comprobar etiquetas de las dos muestras
+                // check the tags of both samples
                 if (!(h00 | h01)) begin
                     miss_n <= 1'b0;
                     fslot  <= h11 & ~h10 ? 1'b0 : (h10 ? 1'b1 : 1'b0);
@@ -378,7 +378,7 @@ module audio (
                         tg_we   <= 1'b1;
                         tg_slot <= fslot;
                         tg_d    <= {1'b1, miss_n ? ln1 : ln0};
-                        st <= S_TAG;              // volver a comprobar (tras escribir la etiqueta)
+                        st <= S_TAG;              // check again (after writing the tag)
                     end
 
                 end
@@ -388,10 +388,10 @@ module audio (
                 st    <= S_CW2;
             end
             S_CW2: begin
-                w0 <= cr_q;                      // palabra de la muestra 0
+                w0 <= cr_q;                      // word of sample 0
                 st <= S_M1;
             end
-            // ------------------------------------------------------------ cálculo
+            // ------------------------------------------------------------ computation
             S_M1: begin : m1
                 reg [31:0] sa, sb;
                 sa = samp(w0, ad0[1:0], fmt);
@@ -425,10 +425,10 @@ module audio (
                 st <= S_UPD;
             end
             S_UPD: begin
-                // contribución a la mezcla
+                // contribution to the mix
                 acc_l <= acc_l + $signed(cl[31:16]);
                 acc_r <= acc_r + $signed(cr[31:16]);
-                // posición
+                // position
                 if (pn[39:16] >= p_len) begin
                     if (p_ctrl[2]) begin
                         s_pos  <= (pw[39:16] >= p_len) ? p_loop : pw[39:16];
@@ -441,7 +441,7 @@ module audio (
                     s_pos  <= pn[39:16];
                     s_frac <= pn[15:0];
                 end
-                // envolvente
+                // envelope
                 case (s_ph)
                 2'd0: if (env_up[24] || env_up[23:0] == 24'hFFFFFF) begin
                           s_env <= 24'hFFFFFF; s_ph <= 2'd1;
@@ -457,7 +457,7 @@ module audio (
                 st <= S_WB;
                 ri <= 4'd0;
             end
-            // ------------------------------------------------------------ escritura del estado
+            // ------------------------------------------------------------ state write-back
             S_WB: begin
                 ri    <= ri + 4'd1;
                 sr_we <= 1'b1;
@@ -480,7 +480,7 @@ module audio (
                     end
                 end
             end
-            // ------------------------------------------------------------ mezcla final
+            // ------------------------------------------------------------ final mix
             S_MIX: begin
                 mix_l <= acc_l * $signed({1'b0, mvol});
                 mix_r <= acc_r * $signed({1'b0, mvol});

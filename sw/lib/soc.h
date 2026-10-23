@@ -1,5 +1,5 @@
 // ============================================================================
-// soc.h - Registros del SoC bltfast (Tang Nano 20K)
+// soc.h - Registers of the bltfast SoC (Tang Nano 20K)
 // ============================================================================
 #ifndef SOC_H
 #define SOC_H
@@ -8,18 +8,18 @@
 #define REG32(a)  (*(volatile uint32_t *)(a))
 #define CPU_HZ    90000000u
 
-// ---------------------------------------------------------------- memoria
+// ---------------------------------------------------------------- memory
 #define SDRAM_BASE     0x40000000u          // cacheable
-#define SDRAM_UC       0x50000000u          // alias sin caché
+#define SDRAM_UC       0x50000000u          // uncached alias
 #define SDRAM_SIZE     (8u << 20)
 #define UNCACHED(p)    ((void *)(((uint32_t)(p) & 0x00FFFFFFu) | SDRAM_UC))
 #define CACHED(p)      ((void *)(((uint32_t)(p) & 0x00FFFFFFu) | SDRAM_BASE))
-#define PHYS(p)        ((uint32_t)(p) & 0x007FFFFFu)   // dirección para DMA (blitter/sonido/vídeo)
+#define PHYS(p)        ((uint32_t)(p) & 0x007FFFFFu)   // address for DMA (blitter/sound/video)
 #define FB0            0x40600000u
 #define FB1            0x40680000u
-#define BRAM_BASE      0x10000000u          // 4 KB internos
+#define BRAM_BASE      0x10000000u          // 4 KB internal
 
-// ---------------------------------------------------------------- sistema
+// ---------------------------------------------------------------- system
 #define SYS_BASE       0x80000000u
 #define SYS_ID         REG32(SYS_BASE + 0x00)
 #define SYS_LED        REG32(SYS_BASE + 0x04)
@@ -53,7 +53,7 @@
 #define UART_TXIDLE    (1u << 1)
 #define UART_RXAVAIL   (1u << 2)
 
-// ---------------------------------------------------------------- vídeo
+// ---------------------------------------------------------------- video
 #define VID_BASE       0x80002000u
 #define VID_CTRL       REG32(VID_BASE + 0x00)
 #define VID_FB_BASE    REG32(VID_BASE + 0x04)
@@ -98,7 +98,7 @@
 #define BLT_F_PALOFF   (1u << 6)
 #define BLT_BUSY       (1u << 0)
 
-// ---------------------------------------------------------------- sonido
+// ---------------------------------------------------------------- sound
 #define AUD_BASE       0x80005000u
 #define AUD_V(v, r)    REG32(AUD_BASE + (v) * 0x20 + (r))
 #define AUD_V_CTRL     0x00
@@ -129,7 +129,7 @@
 #define AUD_EVENT_EN   (1u << 4)
 #define AUD_VOICES     32
 
-// ---------------------------------------------------------------- SD, mandos, PS/2
+// ---------------------------------------------------------------- SD, pads, PS/2
 #define SD_BASE        0x80006000u
 #define SD_CTRL        REG32(SD_BASE + 0x000)
 #define SD_DATA        REG32(SD_BASE + 0x004)
@@ -155,11 +155,11 @@
 #define PS2_DATA       REG32(PS2_BASE + 0x00)
 #define PS2_STAT       REG32(PS2_BASE + 0x04)
 
-// FM OPL2 (YM3812): registro n del chip en OPL_REG(n); la salida se suma a la
-// mezcla del motor de sonido
+// FM OPL2 (YM3812): chip register n at OPL_REG(n); the output is added to the
+// sound engine mix
 #define OPL_BASE       0x80009000u
 #define OPL_REG(n)     REG32(OPL_BASE + (n) * 4)
-#define OPL_GAIN       REG32(OPL_BASE + 0x400)    // 0x40 = 1.0 (por defecto 0x80)
-#define OPL_COUNT      REG32(OPL_BASE + 0x404)    // muestras generadas (~49716/s)
+#define OPL_GAIN       REG32(OPL_BASE + 0x400)    // 0x40 = 1.0 (default 0x80)
+#define OPL_COUNT      REG32(OPL_BASE + 0x404)    // samples generated (~49716/s)
 
 #endif

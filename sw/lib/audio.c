@@ -1,10 +1,10 @@
 // ============================================================================
-// audio.c - Instrumentos generados, voces, efectos y streaming PCM
+// audio.c - Generated instruments, voices, effects and PCM streaming
 // ============================================================================
 #include "audio.h"
 #include "lib.h"
 
-// zona de muestras: 0x4070_0000 - 0x407F_FFFF (1 MB, ver app.ld)
+// sample area: 0x4070_0000 - 0x407F_FFFF (1 MB, see app.ld)
 #define SAMPLE_AREA 0x40700000u
 static uint32_t sample_top = SAMPLE_AREA;
 
@@ -21,7 +21,7 @@ void snd_init(void)
 {
     AUD_STOP = 0xFFFFFFFFu;
     AUD_CTRL = 0x100 | 0x80;
-    SYS_MISC = 1;                          // amplificador de la placa
+    SYS_MISC = 1;                          // on-board amplifier
 }
 
 void snd_voice(int v, const sample_t *s, uint32_t pitch, int vol, int pan, uint32_t adsr)
@@ -72,14 +72,14 @@ void snd_stream_start(int v, int16_t *ring, uint32_t frames, uint32_t rate)
     memset(st_ring, 0, frames * 4);
     sample_t s = { (uint32_t)ring, frames, 0, AUD_FMT_S16ST, rate };
     uint32_t pitch = (uint32_t)(((uint64_t)rate << 16) / 48000u);
-    // formato estéreo: VOL[7:0] escala L y VOL[15:8] escala R (128 + pan 128 = 1.0)
+    // stereo format: VOL[7:0] scales L and VOL[15:8] scales R (128 + pan 128 = 1.0)
     snd_voice(v, &s, pitch, 128, 128, ADSR(0xFF, 0, 0xFF, 0xFF));
     AUD_MON_V = (uint32_t)v;
 }
 
 uint32_t snd_stream_free(void)
 {
-    uint32_t rd = AUD_MON_POS;             // posición de lectura de la voz izquierda
+    uint32_t rd = AUD_MON_POS;             // read position of the left voice
     return (rd + st_frames - st_wr - 1) % st_frames;
 }
 

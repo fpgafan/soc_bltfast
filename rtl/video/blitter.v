@@ -1,43 +1,43 @@
 // ============================================================================
-// blitter.v - Motor de dibujo 2D por hardware (8 bpp), maestro 3 de la SDRAM
+// blitter.v - Hardware 2D drawing engine (8 bpp), SDRAM master 3
 //
-// Operaciones (CMD[3:0]):
-//   0 FILL    rellena el rectángulo DST_XY/SIZE con COLOR.fg
-//   1 BLIT    copia desde SRC con escalado separable y espejo:
-//             para el píxel (i, j) del rectángulo destino se lee el texel
-//             (U0 + i*DU, V0 + j*DV) (16.16 con signo, relativo a SRC_ADDR).
-//             Copia 1:1 -> U0 = V0 = 0, DU = DV = 0x10000; espejo X -> U0 =
-//             (w-1)<<16, DU = -0x10000; escalado x2 -> DU = 0x8000...
-//             Si |DU| <= 1.0 genera 4 píxeles por ciclo; si no, 1.
-//   2 EXPAND  como BLIT pero el origen es de 1 bit por píxel (MSB primero;
-//             U en bits): bit 1 -> fg, bit 0 -> bg (o transparente)
-//   3 LINE    línea de DST_XY a SIZE (x1 | y1 << 16) con COLOR.fg
-//   Flags: CMD[4] transparencia (texel == KEY no se escribe), CMD[5] fondo
-//   transparente en EXPAND, CMD[6] sumar PALOFF a los texels.
-//   Todo se recorta contra CLIP (x0,y0 incluidos, x1,y1 excluidos).
+// Operations (CMD[3:0]):
+//   0 FILL    fills the DST_XY/SIZE rectangle with COLOR.fg
+//   1 BLIT    copies from SRC with separable scaling and mirroring:
+//             for pixel (i, j) of the destination rectangle, texel
+//             (U0 + i*DU, V0 + j*DV) is read (signed 16.16, relative to SRC_ADDR).
+//             1:1 copy -> U0 = V0 = 0, DU = DV = 0x10000; X mirror -> U0 =
+//             (w-1)<<16, DU = -0x10000; x2 scaling -> DU = 0x8000...
+//             If |DU| <= 1.0 it produces 4 pixels per cycle; otherwise 1.
+//   2 EXPAND  like BLIT but the source is 1 bit per pixel (MSB first;
+//             U in bits): bit 1 -> fg, bit 0 -> bg (or transparent)
+//   3 LINE    line from DST_XY to SIZE (x1 | y1 << 16) with COLOR.fg
+//   Flags: CMD[4] transparency (texel == KEY is not written), CMD[5] transparent
+//   background in EXPAND, CMD[6] add PALOFF to the texels.
+//   Everything is clipped against CLIP (x0,y0 inclusive, x1,y1 exclusive).
 //
-// Registros (base 0x8000_4000; se copian a la cola al escribir CMD):
-//   +0x00 STATUS   R: [0] ocupado, [1] cola llena, [12:8] comandos en cola,
-//                     [31:16] comandos terminados (contador)
-//   +0x04 DST_BASE  dirección en bytes de la superficie destino
+// Registers (base 0x8000_4000; copied into the queue when CMD is written):
+//   +0x00 STATUS   R: [0] busy, [1] queue full, [12:8] queued commands,
+//                     [31:16] completed commands (counter)
+//   +0x04 DST_BASE  byte address of the destination surface
 //   +0x08 DST_STRIDE
 //   +0x0C CLIP0     x0 | y0 << 16
 //   +0x10 CLIP1     x1 | y1 << 16
-//   +0x14 SRC_ADDR  dirección en bytes del texel (0,0) de origen
+//   +0x14 SRC_ADDR  byte address of source texel (0,0)
 //   +0x18 SRC_STRIDE
-//   +0x1C DST_XY    x | y << 16 (con signo)
+//   +0x1C DST_XY    x | y << 16 (signed)
 //   +0x20 SIZE      w | h << 16 (LINE: x1 | y1 << 16)
 //   +0x24 COLOR     fg | bg << 8 | key << 16 | paloff << 24
 //   +0x28 U0        +0x2C V0      +0x30 DU      +0x34 DV
-//   +0x38 CMD       W: encola el comando (el bus espera si la cola está llena)
-//   +0x3C IRQ       R/W [0] interrupción al vaciarse la cola
-//   Límite: la fila de origen leída (span de U) no puede superar 2048 bytes.
+//   +0x38 CMD       W: queues the command (the bus waits if the queue is full)
+//   +0x3C IRQ       R/W [0] interrupt when the queue drains
+//   Limit: the source row read (span of U) cannot exceed 2048 bytes.
 // ============================================================================
 `default_nettype none
 module blitter (
     input  wire        clk,
     input  wire        rst,
-    // registros (el ack lo da el módulo: puede esperar con la cola llena)
+    // registers (the module drives ack: it may stall while the queue is full)
     input  wire        sel,
     input  wire        we,
     input  wire [5:0]  a,
@@ -45,7 +45,7 @@ module blitter (
     output reg  [31:0] rd,
     output reg         ack,
     output reg         irq,
-    // maestro SDRAM
+    // SDRAM master
     output reg         m_req,
     output reg         m_we,
     output reg  [22:2] m_addr,
@@ -58,16 +58,16 @@ module blitter (
     input  wire        m_rvalid
 );
     // =====================================================================
-    // Registros de preparación y cola de comandos (16 palabras por entrada)
+    // Staging registers and command queue (16 words per entry)
     // =====================================================================
-    reg [31:0] stg [0:13];          // índices 1..13 = registros +0x04..+0x34
+    reg [31:0] stg [0:13];          // indices 1..13 = registers +0x04..+0x34
     reg        irq_en;
     reg [15:0] done_cnt;
 
-    reg [31:0] cq [0:511];          // 32 entradas x 16 palabras
+    reg [31:0] cq [0:511];          // 32 entries x 16 words
     reg [4:0]  cq_wp, cq_rp;
     reg [5:0]  cq_n;
-    reg        cp_busy;             // copiando los registros a la cola (el bus espera)
+    reg        cp_busy;             // copying the registers into the queue (bus waits)
     reg [3:0]  cp_i;
     reg [31:0] cmd_w;
     reg        cq_we;
@@ -81,7 +81,7 @@ module blitter (
     end
 
     wire cq_full = (cq_n == 6'd32);
-    reg  pend_cmd;                  // escritura a CMD esperando sitio
+    reg  pend_cmd;                  // CMD write waiting for room
     reg  [31:0] pend_wd;
     reg  eng_busy;
     wire cq_pop;
@@ -98,7 +98,7 @@ module blitter (
         end else begin
             if (sel && !ack && !pend_cmd) begin
                 if (we && a[5:2] == 4'hE) begin
-                    // CMD: esperar a que haya sitio y a que acabe la copia anterior
+                    // CMD: wait for room and for the previous copy to finish
                     pend_cmd <= 1'b1;
                     pend_wd  <= wd;
                 end else begin
@@ -123,13 +123,13 @@ module blitter (
                     cp_busy  <= 1'b0;
                     cq_wp    <= cq_wp + 5'd1;
                     pend_cmd <= 1'b0;
-                    ack      <= 1'b1;          // la CPU sigue cuando el comando está en la cola
+                    ack      <= 1'b1;          // the CPU continues once the command is queued
                 end
             end
         end
     end
 
-    // lectura de registros
+    // register reads
     always @(posedge clk) begin
         case (a[5:2])
         4'h0:    rd <= {done_cnt, 2'd0, cq_n, 6'd0, cq_full, eng_busy | (cq_n != 6'd0) | cp_busy | pend_cmd};
@@ -140,14 +140,14 @@ module blitter (
     end
 
     // =====================================================================
-    // Multiplicador compartido (con signo): p = ma * mb, 3 ciclos
-    //   ma: 18 bits con signo, mb: 32 bits con signo -> p[31:0]
+    // Shared multiplier (signed): p = ma * mb, 3 cycles
+    //   ma: 18-bit signed, mb: 32-bit signed -> p[31:0]
     // =====================================================================
     reg  signed [17:0] ma;
     reg  [31:0]        mb;
     reg  signed [17:0] ma1;
-    reg  signed [16:0] mbl1;            // parte baja sin signo (bit 16 = 0)
-    reg  signed [16:0] mbh1;            // parte alta con signo
+    reg  signed [16:0] mbl1;            // low part, unsigned (bit 16 = 0)
+    reg  signed [16:0] mbh1;            // high part, signed
     reg  signed [34:0] ppl, pph;
     reg  [31:0]        mp;
     always @(posedge clk) begin
@@ -160,9 +160,9 @@ module blitter (
     end
 
     // =====================================================================
-    // Motor
+    // Engine
     // =====================================================================
-    // campos del comando en curso
+    // fields of the current command
     reg [3:0]  op;
     reg        f_tr, f_bgtr, f_pal;
     reg [22:0] c_dbase, c_src;
@@ -183,15 +183,15 @@ module blitter (
 
     reg signed [16:0] vx0, vx1, vy0, vy1;
     reg [15:0] vw;
-    reg signed [15:0] jrow;              // fila actual (coordenada destino)
+    reg signed [15:0] jrow;              // current row (destination coordinate)
     reg signed [31:0] u_st, u_en, vcur;
-    reg signed [15:0] s_lo, s_hi;        // texels (o bytes en EXPAND) extremos
-    reg [22:0] drow;                      // dirección del primer píxel visible de la fila
-    reg [22:0] srow;                      // dirección de la fila de origen
-    // camino rápido (4 píxeles/ciclo): |DU| <= 1.0 -> los 4 texels caen en 4 bytes seguidos
+    reg signed [15:0] s_lo, s_hi;        // extreme texels (or bytes in EXPAND)
+    reg [22:0] drow;                      // address of the first visible pixel of the row
+    reg [22:0] srow;                      // address of the source row
+    // fast path (4 pixels/cycle): |DU| <= 1.0 -> the 4 texels fall in 4 consecutive bytes
     wire fast = (c_du <= 32'sh0001_0000) && (c_du >= -32'sh0001_0000);
 
-    // ---------------------------------------------------------------- buffer de origen (RB)
+    // ---------------------------------------------------------------- source buffer (RB)
     reg [7:0]  rb0 [0:511], rb1 [0:511], rb2 [0:511], rb3 [0:511];
     reg        rb_we;
     reg [8:0]  rb_wa;
@@ -207,7 +207,7 @@ module blitter (
         rb_q2 <= rb2[rb_ra2]; rb_q3 <= rb3[rb_ra3];
     end
 
-    // ---------------------------------------------------------------- buffer de salida (OB)
+    // ---------------------------------------------------------------- output buffer (OB)
     reg [35:0] ob [0:511];
     reg        ob_we;
     reg [8:0]  ob_wa;
@@ -219,69 +219,69 @@ module blitter (
         ob_q <= ob[ob_ra];
     end
 
-    // ---------------------------------------------------------------- lectura de la fila de origen
-    reg [22:2] rd_w;                     // siguiente palabra a pedir
-    reg [9:0]  rd_left;                  // palabras que faltan por pedir
-    reg [9:0]  rd_got;                   // palabras recibidas (índice en RB)
+    // ---------------------------------------------------------------- source row read
+    reg [22:2] rd_w;                     // next word to request
+    reg [9:0]  rd_left;                  // words still to request
+    reg [9:0]  rd_got;                   // words received (index into RB)
     reg [9:0]  rd_tot;
-    reg [4:0]  rd_out;                   // palabras pendientes de la ráfaga en curso
-    reg [4:0]  bl_q;                     // longitud de la próxima ráfaga (precalculada)
+    reg [4:0]  rd_out;                   // pending words of the current burst
+    reg [4:0]  bl_q;                     // length of the next burst (precomputed)
     reg        bl_ok;
     reg        row_last;
-    reg [1:0]  s_bias;                   // (dirección del primer byte) & 3
+    reg [1:0]  s_bias;                   // (address of the first byte) & 3
 
-    // ---------------------------------------------------------------- generación
-    reg [9:0]  g_nw;                     // palabras destino de la fila
-    reg [9:0]  g_w;                      // palabra en curso
-    reg [1:0]  g_k;                      // píxel dentro de la palabra (modo lento)
-    reg signed [31:0] g_u;               // U del píxel 0 de la palabra (rápido) / del píxel (lento)
-    reg signed [16:0] g_i;               // índice del píxel 0 de la palabra en curso
+    // ---------------------------------------------------------------- generation
+    reg [9:0]  g_nw;                     // destination words in the row
+    reg [9:0]  g_w;                      // current word
+    reg [1:0]  g_k;                      // pixel within the word (slow mode)
+    reg signed [31:0] g_u;               // U of pixel 0 of the word (fast) / of the pixel (slow)
+    reg signed [16:0] g_i;               // index of pixel 0 of the current word
     reg        g_run;
     reg signed [31:0] du2, du3, du4;
-    // etapa 1
+    // stage 1
     reg        p1_v, p1_last;
     reg signed [31:0] p1_u0, p1_u1, p1_u2, p1_u3;
-    reg [3:0]  p1_m;                     // píxeles dentro del rango
+    reg [3:0]  p1_m;                     // pixels inside the range
     reg [8:0]  p1_w;
     reg [1:0]  p1_k;
-    // etapa 2
+    // stage 2
     reg        p2_v, p2_last;
-    reg signed [15:0] p2_s0, p2_s1, p2_s2, p2_s3;   // índices de byte en RB
+    reg signed [15:0] p2_s0, p2_s1, p2_s2, p2_s3;   // byte indices into RB
     reg [2:0]  p2_b0, p2_b1, p2_b2, p2_b3;           // bit (EXPAND)
     reg [3:0]  p2_m;
     reg [8:0]  p2_w;
     reg [1:0]  p2_k;
-    // etapa 3 (lectura de RB)
+    // stage 3 (RB read)
     reg        p3_v, p3_last;
     reg [1:0]  p3_l0, p3_l1, p3_l2, p3_l3;
     reg [2:0]  p3_b0, p3_b1, p3_b2, p3_b3;
     reg [3:0]  p3_m;
     reg [8:0]  p3_w;
     reg [1:0]  p3_k;
-    // etapa 4 (dato de RB disponible)
+    // stage 4 (RB data available)
     reg        p4_v, p4_last;
     reg [1:0]  p4_l0, p4_l1, p4_l2, p4_l3;
     reg [2:0]  p4_b0, p4_b1, p4_b2, p4_b3;
     reg [3:0]  p4_m;
     reg [8:0]  p4_w;
     reg [1:0]  p4_k;
-    // etapa 5
+    // stage 5
     reg        p5_v, p5_last;
     reg [3:0]  p5_m;
     reg [8:0]  p5_w;
     reg [1:0]  p5_k;
     reg [8:0]  p5_x0, p5_x1, p5_x2, p5_x3;
-    // empaquetado
+    // packing
     reg [31:0] acc_d;
     reg [3:0]  acc_m;
 
-    // índice de byte en RB a partir de U
+    // byte index into RB from U
     wire signed [15:0] rb_off = {14'd0, s_bias} - s_lo;
     function signed [15:0] sidx(input signed [31:0] u, input e);
         sidx = e ? ($signed(u[31:16]) >>> 3) : $signed(u[31:16]);
     endfunction
 
-    // texel -> píxel de salida
+    // texel -> output pixel
     function [8:0] xform(input [7:0] t, input bit_v, input is_exp);
         reg [7:0] c;
         reg       tr;
@@ -300,16 +300,16 @@ module blitter (
     wire [7:0] lane_q [0:3];
     assign lane_q[0] = rb_q0; assign lane_q[1] = rb_q1; assign lane_q[2] = rb_q2; assign lane_q[3] = rb_q3;
 
-    // ---------------------------------------------------------------- escritura de la fila
+    // ---------------------------------------------------------------- row write
     reg [22:2] wr_w;
     reg [9:0]  wr_left, wr_idx;
     reg [4:0]  wr_out;
-    reg [35:0] wreg;                     // palabra que se está escribiendo (= OB[wr_idx])
-    // prelectura: ob_q siempre contiene OB[wr_idx + 1] (o OB[0] en E_WR0 -> E_WR1)
+    reg [35:0] wreg;                     // word being written (= OB[wr_idx])
+    // prefetch: ob_q always holds OB[wr_idx + 1] (or OB[0] in E_WR0 -> E_WR1)
     assign m_wdata = wreg[31:0];
     assign m_wmask = wreg[35:32];
 
-    // ---------------------------------------------------------------- líneas
+    // ---------------------------------------------------------------- lines
     reg signed [16:0] lx, ly, lx1, ly1, ldx, ldy, lerr;
     reg               lsx, lsy;
     reg [22:0]        laddr;
@@ -319,7 +319,7 @@ module blitter (
 
     wire signed [16:0] c_dx17 = c_dx, c_dy17 = c_dy;
 
-    // burst: hasta 16 palabras sin cruzar 1 KB
+    // burst: up to 16 words without crossing 1 KB
     function [4:0] blen(input [22:2] wa, input [9:0] left);
         reg [8:0] to_row;
         begin
@@ -345,7 +345,7 @@ module blitter (
             if (m_ack) m_req <= 1'b0;
 
             case (es)
-            // ------------------------------------------------------------ cola
+            // ------------------------------------------------------------ queue
             E_IDLE: begin
                 eng_busy <= 1'b0;
                 if (cq_n != 6'd0) begin
@@ -356,7 +356,7 @@ module blitter (
                 end
             end
             E_LOAD: begin
-                // cq_q tiene la palabra ld_i-1 (latencia 1)
+                // cq_q holds word ld_i-1 (latency 1)
                 cq_ra <= {cq_rp, ld_i[3:0] + 4'd1};
                 ld_i  <= ld_i + 5'd1;
                 case (ld_i)
@@ -381,7 +381,7 @@ module blitter (
                     es    <= (op == 4'd3) ? E_LINE : E_CLIP;
                 end
             end
-            // ------------------------------------------------------------ recorte
+            // ------------------------------------------------------------ clipping
             E_CLIP: begin
                 vx0 <= (c_dx17 > c_cx0) ? c_dx17 : c_cx0;
                 vy0 <= (c_dy17 > c_cy0) ? c_dy17 : c_cy0;
@@ -416,7 +416,7 @@ module blitter (
             end
             E_RANGE: begin
                 drow <= c_dbase + mp[22:0] + {{6{vx0[16]}}, vx0};
-                // extremos del span de U (en bytes de RB)
+                // extremes of the U span (in RB bytes)
                 s_lo <= (u_st < u_en) ? sidx(u_st, op == 4'd2) : sidx(u_en, op == 4'd2);
                 s_hi <= (u_st < u_en) ? sidx(u_en, op == 4'd2) : sidx(u_st, op == 4'd2);
                 du2 <= c_du <<< 1;
@@ -428,19 +428,19 @@ module blitter (
                 mwait <= mwait + 2'd1;
                 if (mwait == 2'd3) es <= es_ret;
             end
-            // ------------------------------------------------------------ filas
+            // ------------------------------------------------------------ rows
             E_ROW: begin
                 row_last <= (jrow + 16'sd1 >= vy1);
                 if (op == 4'd0) begin
                     es <= E_GEN;
                     g_run <= 1'b0;
                 end else begin
-                    ma <= $signed(vcur[31:16]); mb <= {16'd0, c_sstride};   // fila de origen * stride
+                    ma <= $signed(vcur[31:16]); mb <= {16'd0, c_sstride};   // source row * stride
                     mwait <= 2'd0; es_ret <= E_ROWM; es <= E_WAITM;
                 end
             end
             E_ROWM: begin
-                // primera y última palabra de la fila de origen
+                // first and last word of the source row
                 begin : rr
                     reg [22:0] lo_a, hi_a;
                     lo_a = c_src + mp[22:0] + {{7{s_lo[15]}}, s_lo};
@@ -485,20 +485,20 @@ module blitter (
                     rd_out <= rd_out - 5'd1;
                 end
             end
-            // ------------------------------------------------------------ generación
+            // ------------------------------------------------------------ generation
             E_GEN: begin
                 if (!g_run) begin
-                    // arranque de la fila
+                    // row start
                     g_run <= 1'b1;
                     g_nw  <= ((drow + {7'd0, vw} - 23'd1) >> 2) - (drow >> 2) + 23'd1;
                     g_w   <= 10'd0;
                     g_k   <= 2'd0;
                     g_i   <= -$signed({15'd0, drow[1:0]});
-                    // U del píxel 0 de la primera palabra = u_st - (drow & 3) * DU
+                    // U of pixel 0 of the first word = u_st - (drow & 3) * DU
                     g_u   <= u_st - (drow[1] ? du2 : 32'sd0) - (drow[0] ? c_du : 32'sd0);
                     acc_m <= 4'd0;
                 end else if (g_w != g_nw) begin
-                    // emitir una ranura
+                    // issue one slot
                     p1_v    <= 1'b1;
                     p1_w    <= g_w[8:0];
                     if (fast || op == 4'd0) begin
@@ -513,7 +513,7 @@ module blitter (
                         g_i <= g_i + 17'sd4;
                         g_w <= g_w + 10'd1;
                     end else begin
-                        // modo lento: un píxel por ciclo
+                        // slow mode: one pixel per cycle
                         p1_u0 <= g_u; p1_u1 <= g_u; p1_u2 <= g_u; p1_u3 <= g_u;
                         p1_m  <= ((g_i + $signed({15'd0, g_k}) >= 0) &&
                                   (g_i + $signed({15'd0, g_k}) < $signed({1'b0, vw}))) ? (4'b0001 << g_k) : 4'b0000;
@@ -541,13 +541,13 @@ module blitter (
                     es      <= E_WR0;
                 end
             end
-            E_WR0: es <= E_WR1;              // se presenta la dirección 0
+            E_WR0: es <= E_WR1;              // address 0 is presented
             E_WR1: begin                     // ob_q = OB[0]
                 wreg  <= ob_q;
                 bl_ok <= 1'b0;
                 es    <= E_WR;
             end
-            // ------------------------------------------------------------ escritura
+            // ------------------------------------------------------------ write
             E_WR: begin
                 if (!m_req && wr_out == 5'd0) begin
                     if (wr_left == 10'd0)
@@ -587,7 +587,7 @@ module blitter (
                 if (irq_en && cq_n == 6'd0) irq <= 1'b1;
                 es <= E_IDLE;
             end
-            // ------------------------------------------------------------ líneas (Bresenham)
+            // ------------------------------------------------------------ lines (Bresenham)
             E_LINE: begin
                 lx  <= c_dx; ly <= c_dy; lx1 <= c_w; ly1 <= c_h;
                 ldx <= (c_w > c_dx) ? c_w - c_dx : c_dx - c_w;              //  |dx|
@@ -642,20 +642,20 @@ module blitter (
             default: es <= E_IDLE;
             endcase
 
-            // ---------------------------------------------------------------- tubería de generación
-            // etapa 2: índices de byte en RB y direcciones por carril
+            // ---------------------------------------------------------------- generation pipeline
+            // stage 2: byte indices into RB and per-lane addresses
             p2_v <= p1_v; p2_last <= p1_last; p2_m <= p1_m; p2_w <= p1_w; p2_k <= p1_k;
             p2_s0 <= sidx(p1_u0, op == 4'd2) + rb_off;
             p2_s1 <= sidx(p1_u1, op == 4'd2) + rb_off;
             p2_s2 <= sidx(p1_u2, op == 4'd2) + rb_off;
             p2_s3 <= sidx(p1_u3, op == 4'd2) + rb_off;
             p2_b0 <= p1_u0[18:16]; p2_b1 <= p1_u1[18:16]; p2_b2 <= p1_u2[18:16]; p2_b3 <= p1_u3[18:16];
-            // etapa 3: lectura de RB (dirección de cada carril dentro de la ventana de 4 bytes)
+            // stage 3: RB read (address of each lane within the 4-byte window)
             p3_v <= p2_v; p3_last <= p2_last; p3_m <= p2_m; p3_w <= p2_w; p3_k <= p2_k;
             p3_l0 <= p2_s0[1:0]; p3_l1 <= p2_s1[1:0]; p3_l2 <= p2_s2[1:0]; p3_l3 <= p2_s3[1:0];
             p3_b0 <= p2_b0; p3_b1 <= p2_b1; p3_b2 <= p2_b2; p3_b3 <= p2_b3;
             begin : lanes
-                // ventana de 4 bytes [smin, smin+3]: cada carril lee el único byte suyo
+                // 4-byte window [smin, smin+3]: each lane reads its own single byte
                 reg signed [15:0] smin, t0, t1, t2, t3;
                 smin = (p2_s0 < p2_s3) ? p2_s0 : p2_s3;
                 t0 = smin + {14'd0, 2'd0 - smin[1:0]};
@@ -667,7 +667,7 @@ module blitter (
             p4_v <= p3_v; p4_last <= p3_last; p4_m <= p3_m; p4_w <= p3_w; p4_k <= p3_k;
             p4_l0 <= p3_l0; p4_l1 <= p3_l1; p4_l2 <= p3_l2; p4_l3 <= p3_l3;
             p4_b0 <= p3_b0; p4_b1 <= p3_b1; p4_b2 <= p3_b2; p4_b3 <= p3_b3;
-            // etapa 5: texels -> píxeles (transformación)
+            // stage 5: texels -> pixels (transform)
             p5_v <= p4_v; p5_last <= p4_last; p5_m <= p4_m; p5_w <= p4_w; p5_k <= p4_k;
             if (op == 4'd0) begin
                 p5_x0 <= {1'b1, c_fg}; p5_x1 <= {1'b1, c_fg}; p5_x2 <= {1'b1, c_fg}; p5_x3 <= {1'b1, c_fg};
@@ -677,19 +677,19 @@ module blitter (
                 p5_x2 <= xform(lane_q[p4_l2], lane_q[p4_l2][3'd7 - p4_b2], op == 4'd2);
                 p5_x3 <= xform(lane_q[p4_l3], lane_q[p4_l3][3'd7 - p4_b3], op == 4'd2);
             end
-            // etapa 6: empaquetado
+            // stage 6: packing
             if (p5_v) begin : pack
                 reg [8:0] x0, x1, x2, x3;
                 reg [31:0] d;
                 reg [3:0]  m;
                 x0 = p5_x0; x1 = p5_x1; x2 = p5_x2; x3 = p5_x3;
                 if (p5_last && p5_k == 2'd3 && (fast || op == 4'd0)) begin
-                    // ranura rápida: palabra completa
+                    // fast slot: full word
                     d = {x3[7:0], x2[7:0], x1[7:0], x0[7:0]};
                     m = p5_m & {x3[8], x2[8], x1[8], x0[8]};
                     ob_we <= 1'b1; ob_wa <= p5_w; ob_wd <= {m, d};
                 end else begin
-                    // ranura lenta: un byte en la posición p5_k
+                    // slow slot: one byte at position p5_k
                     d = acc_d;
                     m = acc_m;
                     case (p5_k)

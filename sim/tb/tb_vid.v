@@ -1,13 +1,13 @@
 // ============================================================================
-// tb_vid.v - video + hdmi_tx + sdram_ctrl + modelo de SDRAM
-//   Framebuffer inicial (+init), paleta aleatoria, muestras de audio a 48 kHz
-//   (contador), y volcado de las palabras TMDS de un cuadro completo (+out).
+// tb_vid.v - video + hdmi_tx + sdram_ctrl + SDRAM model
+//   Initial framebuffer (+init), random palette, 48 kHz audio samples
+//   (counter), and dump of the TMDS words of a complete frame (+out).
 //   +sx=<n> +sy=<n> scroll ; +wrapw=<n> +wraph=<n> ; +stride=<n>
 // ============================================================================
 `timescale 1ns/1ps
 module tb_vid;
     reg clk = 0;  always #5 clk = ~clk;              // 100 MHz
-    reg cp = 0;   always #19.841 cp = ~cp;           // 25,2 MHz
+    reg cp = 0;   always #19.841 cp = ~cp;           // 25.2 MHz
     reg sd_clk = 0; always @(clk) sd_clk <= #2 clk;
     reg rst = 1, rst_pix = 1;
 
@@ -35,7 +35,7 @@ module tb_vid;
         .hdmi_mode(hm)
     );
 
-    // muestras de audio: contador a 48 kHz (525 ciclos de píxel)
+    // audio samples: 48 kHz counter (525 pixel cycles)
     reg [9:0]  t48 = 0;
     reg        awe = 0;
     reg [15:0] smp = 16'h1000;
@@ -97,7 +97,7 @@ module tb_vid;
         for (i = 0; i < 256; i = i + 1) wp(i, palv[i]);
         wr(6'h08, stride); wr(6'h0C, sx); wr(6'h10, sy); wr(6'h14, ww); wr(6'h18, wh);
         wr(6'h00, 32'h5);
-        // el primer cuadro completo aplica los registros; se graba el segundo
+        // the first complete frame applies the registers; the second one is recorded
         @(posedge ivb); @(posedge ivb);
         fo = $fopen(fout, "w");
         @(posedge cp);
@@ -107,7 +107,7 @@ module tb_vid;
             $fwrite(fo, "%08h\n", tw);
         end
         $fclose(fo);
-        $display("VID: hecho, errores SDRAM=%0d", u_mem.errors);
+        $display("VID: done, SDRAM errors=%0d", u_mem.errors);
         $finish;
     end
 endmodule

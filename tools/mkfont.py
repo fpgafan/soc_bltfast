@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""mkfont.py - Extrae la fuente CGA 8x8 (página 850) de Windows a sw/lib/font8x8.c
-   (256 caracteres x 8 bytes, MSB = píxel izquierdo) y una vista previa PNG."""
+"""mkfont.py - Extracts the Windows 8x8 CGA font (code page 850) into sw/lib/font8x8.c
+   (256 characters x 8 bytes, MSB = leftmost pixel) plus a PNG preview."""
 import os, struct, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -34,18 +34,18 @@ for off in range(0, len(d) - 120):
         font = glyphs
         break
 if not font:
-    print("no se encontró una fuente 8x8"); sys.exit(1)
+    print("no 8x8 font found"); sys.exit(1)
 
 out = os.path.join(ROOT, "sw", "lib", "font8x8.c")
 with open(out, "w") as f:
-    f.write("// font8x8.c - fuente 8x8, página de códigos 850 (extraída de cga80850.fon)\n")
-    f.write("// 256 caracteres x 8 filas, bit 7 = píxel izquierdo\n#include <stdint.h>\n")
+    f.write("// font8x8.c - 8x8 font, code page 850 (extracted from cga80850.fon)\n")
+    f.write("// 256 characters x 8 rows, bit 7 = leftmost pixel\n#include <stdint.h>\n")
     f.write("const uint8_t font8x8[256 * 8] __attribute__((aligned(4))) = {\n")
     for c in range(256):
         g = font.get(c, bytes(8))
         f.write("  " + ", ".join("0x%02x" % b for b in g) + ",\n")
     f.write("};\n")
-print("escrito", out)
+print("written", out)
 try:
     from PIL import Image
     im = Image.new("L", (16 * 9, 16 * 9), 0)

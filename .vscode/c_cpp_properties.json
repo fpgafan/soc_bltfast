@@ -1,5 +1,5 @@
 {
-    // Autocompletado y errores en el editor con el compilador RISC-V del SoC
+    // Editor autocompletion and diagnostics with the SoC's RISC-V compiler
     "configurations": [
         {
             "name": "RV32IM (bltfast)",

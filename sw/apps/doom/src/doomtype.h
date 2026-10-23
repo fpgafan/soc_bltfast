@@ -53,7 +53,7 @@
 #endif
 
 #ifdef BLTFAST
-// de Chocolate Doom (i_oplmusic.c, midifile.c)
+// from Chocolate Doom (i_oplmusic.c, midifile.c)
 #define PACKED_STRUCT(...) struct __VA_ARGS__ PACKEDATTR
 #endif
 

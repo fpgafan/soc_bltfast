@@ -1,15 +1,15 @@
 // ============================================================================
-// sdram_model.v - Modelo de comportamiento de una SDR SDRAM 2M x 32 (4 bancos)
-// para simulación: BL = 1, CL programado por MRS, máscaras DQM, y
-// comprobación de tiempos (tRCD, tRP, tRAS, tWR, tRC, tRFC, refresco).
-// Salida de lectura con tAC / tOH reales para probar la ventana de captura.
+// sdram_model.v - Behavioral model of a 2M x 32 SDR SDRAM (4 banks)
+// for simulation: BL = 1, CL programmed by MRS, DQM masks, and
+// timing checks (tRCD, tRP, tRAS, tWR, tRC, tRFC, refresh).
+// Read output with real tAC / tOH to test the capture window.
 // ============================================================================
 `timescale 1ns/1ps
 module sdram_model #(
-    parameter real TAC  = 5.4,          // reloj -> dato válido (ns)
-    parameter real TOH  = 2.5,          // dato válido tras el siguiente flanco (ns)
+    parameter real TAC  = 5.4,          // clock -> data valid (ns)
+    parameter real TOH  = 2.5,          // data valid after the next edge (ns)
     parameter T_RCD = 2, T_RP = 2, T_RAS = 5, T_WR = 2, T_RFC = 7, T_RC = 7,
-    parameter REF_MAX_CYC = 1600,       // máximo entre REFRESH (relajado)
+    parameter REF_MAX_CYC = 1600,       // max between REFRESHes (relaxed)
     parameter INIT_FILE = ""
 )(
     input  wire        clk,
@@ -24,7 +24,7 @@ module sdram_model #(
     reg [31:0] dq_out;
     reg        dq_oe;
     assign dq = dq_oe ? dq_out : 32'bz;
-    // bus sin conducir: pull-down débil (en la placa sería basura, nunca X)
+    // undriven bus: weak pull-down (on the board it would be garbage, never X)
     assign (weak0, weak1) dq = 32'h0000_0000;
 
     integer cyc = 0;
@@ -36,7 +36,7 @@ module sdram_model #(
     integer errors = 0;
     reg     inited = 0;
 
-    // tubería de lectura: dato y válido por ciclo futuro
+    // read pipeline: data and valid per future cycle
     reg [31:0] rd_data [0:7];
     reg        rd_v    [0:7];
     integer i;
@@ -57,13 +57,13 @@ module sdram_model #(
     task err(input [8*48-1:0] msg);
         begin
             errors = errors + 1;
-            if (errors < 20) $display("[%0t] SDRAM ERROR: %0s (ciclo %0d)", $time, msg, cyc);
+            if (errors < 20) $display("[%0t] SDRAM ERROR: %0s (cycle %0d)", $time, msg, cyc);
         end
     endtask
 
     always @(posedge clk) begin
         cyc = cyc + 1;
-        // salida de lectura programada para este flanco
+        // read output scheduled for this edge
         for (i = 0; i < 7; i = i + 1) begin
             rd_data[i] = rd_data[i+1];
             rd_v[i]    = rd_v[i+1];
@@ -71,34 +71,34 @@ module sdram_model #(
         rd_v[7] = 0;
         if (rd_v[0]) begin
             dq_oe  <= #(TOH) 1'b1;
-            dq_out <= #(TOH) 32'hDEAD_BEEF;              // dato en transición (basura)
+            dq_out <= #(TOH) 32'hDEAD_BEEF;              // data in transition (garbage)
             dq_out <= #(TAC) rd_data[0];
         end else begin
             dq_oe  <= #(TOH) 1'b0;
         end
 
         if (cke && inited && (cyc - t_last_ref) > REF_MAX_CYC) begin
-            err("refresco atrasado");
+            err("late refresh");
             t_last_ref = cyc;
         end
 
         if (cke) case (cmd)
         4'b0011: begin                                  // ACTIVE
-            if (row_open[ba])                     err("ACT con banco abierto");
+            if (row_open[ba])                     err("ACT with bank open");
             if (cyc - t_pre[ba] < T_RP)           err("tRP");
             if (cyc - t_act[ba] < T_RC)           err("tRC");
             if (cyc - t_ref < T_RFC)              err("tRFC (ACT)");
             row_open[ba] = 1; row[ba] = a; t_act[ba] = cyc;
         end
         4'b0101: begin                                  // READ
-            if (!row_open[ba])                    err("READ con banco cerrado");
+            if (!row_open[ba])                    err("READ with bank closed");
             if (cyc - t_act[ba] < T_RCD)          err("tRCD (READ)");
-            if (a[10])                            err("auto-precharge no esperado");
+            if (a[10])                            err("unexpected auto-precharge");
             rd_data[cl-1] = mem[waddr];
             rd_v[cl-1]    = 1;
         end
         4'b0100: begin                                  // WRITE
-            if (!row_open[ba])                    err("WRITE con banco cerrado");
+            if (!row_open[ba])                    err("WRITE with bank closed");
             if (cyc - t_act[ba] < T_RCD)          err("tRCD (WRITE)");
             if (!dqm[0]) mem[waddr][7:0]   = dq[7:0];
             if (!dqm[1]) mem[waddr][15:8]  = dq[15:8];
@@ -116,7 +116,7 @@ module sdram_model #(
         end
         4'b0001: begin                                  // AUTO REFRESH
             for (i = 0; i < 4; i = i + 1) begin
-                if (row_open[i])                  err("REF con banco abierto");
+                if (row_open[i])                  err("REF with bank open");
                 if (cyc - t_pre[i] < T_RP)        err("tRP (REF)");
             end
             if (cyc - t_ref < T_RFC)              err("tRFC (REF)");
@@ -124,7 +124,7 @@ module sdram_model #(
         end
         4'b0000: begin                                  // MODE REGISTER
             cl = a[6:4];
-            if (a[2:0] != 3'b000)                 err("BL distinto de 1");
+            if (a[2:0] != 3'b000)                 err("BL other than 1");
             inited = 1;
             t_last_ref = cyc;
         end

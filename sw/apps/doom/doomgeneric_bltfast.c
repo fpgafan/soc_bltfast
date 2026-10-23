@@ -1,13 +1,13 @@
 // ============================================================================
-// doomgeneric_bltfast.c - Doom en el SoC bltfast
+// doomgeneric_bltfast.c - Doom on the bltfast SoC
 //
-//  Vídeo: Doom dibuja en I_VideoBuffer (320x200, 8 bpp); el blitter lo escala
-//         a 640x480 (relación 4:3 original) en el buffer oculto y se cambia
-//         al empezar el cuadro. La paleta de Doom va directa a la del vídeo.
-//  Entrada: teclado PS/2 (set 2) y mandos SNES/NES (ver tabla abajo);
+//  Video: Doom draws into I_VideoBuffer (320x200, 8 bpp); the blitter scales it
+//         to 640x480 (original 4:3 aspect) into the hidden buffer, which is
+//         flipped at frame start. Doom's palette goes straight to the video one.
+//  Input: PS/2 keyboard (set 2) and SNES/NES pads (see table below);
 //         S1 = Esc, S2 = Enter.
-//  Ficheros: directorio raíz de la microSD (sys_bltfast.c). Argumentos
-//         opcionales en DOOMARGS.TXT (p. ej. "-iwad doom2.wad -warp 1").
+//  Files: root directory of the microSD (sys_bltfast.c). Optional
+//         arguments in DOOMARGS.TXT (e.g. "-iwad doom2.wad -warp 1").
 // ============================================================================
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,8 +29,8 @@ extern int messageToPrint;
 extern boolean messageNeedsInput;
 extern char sys_errbuf[];
 
-// ---------------------------------------------------------------- vídeo
-static surface shown, back;        // buffer visible y buffer donde se escala
+// ---------------------------------------------------------------- video
+static surface shown, back;        // visible buffer and buffer being scaled into
 static int text_y;
 
 static void say(const char *s, uint8_t color)
@@ -43,7 +43,7 @@ static void say(const char *s, uint8_t color)
 
 static void video_init(void)
 {
-    gfx_init();                                  // FB0/FB1, paleta por defecto
+    gfx_init();                                  // FB0/FB1, default palette
     back = gfx_screen;
     shown = back;
     shown.addr = back.addr == FB0 ? FB1 : FB0;
@@ -52,8 +52,8 @@ static void video_init(void)
     gfx_wait();
 }
 
-// temporizador a 500 Hz: muestrea los mandos (para no perder pulsaciones
-// cortas mientras Doom no lee la entrada) y mueve el reproductor MIDI
+// 500 Hz timer: samples the pads (so short presses are not lost
+// while Doom is not reading input) and drives the MIDI player
 #define TIMER_HZ 500
 static volatile uint32_t pad_now, pad_down, pad_up;
 
@@ -75,7 +75,7 @@ void irq_timer(void)
     SYS_MTIMECMPH = (uint32_t)(t >> 32);
     pad_sample();
     midi_update();
-    OPL_Tick();                                  // música FM (opl_bltfast.c)
+    OPL_Tick();                                  // FM music (opl_bltfast.c)
 }
 
 static inline uint32_t irq_save(void)
@@ -97,7 +97,7 @@ void DG_DrawFrame(void)
 {
     static surface src;
     src =(surface){ (uint32_t)I_VideoBuffer, SCREENWIDTH, SCREENHEIGHT, SCREENWIDTH };
-    while (VID_PENDING & 1) ;                    // el cambio anterior ya se ve: 'back' está libre
+    while (VID_PENDING & 1) ;                    // the previous flip is visible: 'back' is free
     gfx_target(&back);
     gfx_blit_scaled(&src, 0, 0, SCREENWIDTH, SCREENHEIGHT, 0, 0, SCR_W, SCR_H, 0, 0);
     gfx_wait();
@@ -105,7 +105,7 @@ void DG_DrawFrame(void)
     VID_STRIDE  = SCR_W;
     surface t = shown; shown = back; back = t;
 
-    // FPS por la UART cada 5 s (solo cuadros con un tic nuevo): media y el más lento
+    // FPS over the UART every 5 s (only frames with a new tic): average and the slowest
     static uint64_t t0, tlast;
     static uint32_t frames, worst;
     static int last_tic = -1;
@@ -119,7 +119,7 @@ void DG_DrawFrame(void)
     frames++;
     if (now - t0 >= 5ull * CPU_HZ) {
         uint32_t f10 = (uint32_t)((uint64_t)frames * 10u * CPU_HZ / (now - t0));
-        lib_printf("fps: %u.%u  (cuadro mas lento: %u ms)\n", f10 / 10, f10 % 10, worst / (CPU_HZ / 1000u));
+        lib_printf("fps: %u.%u  (slowest frame: %u ms)\n", f10 / 10, f10 % 10, worst / (CPU_HZ / 1000u));
         t0 = now; frames = 0; worst = 0;
     }
 }
@@ -132,11 +132,11 @@ void DG_SetPalette(const struct color *colors)
 
 void DG_SetWindowTitle(const char *title) { lib_printf("%s\n", title); }
 
-// ---------------------------------------------------------------- tiempo
+// ---------------------------------------------------------------- time
 uint32_t DG_GetTicksMs(void) { return (uint32_t)(time_cycles() / (CPU_HZ / 1000u)); }
 void DG_SleepMs(uint32_t ms) { delay_ms(ms); }
 
-// ---------------------------------------------------------------- entrada
+// ---------------------------------------------------------------- input
 #define QLEN 64
 static uint16_t q[QLEN];
 static unsigned qh, qt;
@@ -148,7 +148,7 @@ static void push(int pressed, int key)
     qh = (qh + 1) % QLEN;
 }
 
-// teclado PS/2, códigos del set 2 sin prefijo
+// PS/2 keyboard, set 2 codes without prefix
 static const uint8_t ps2_key[0x84] = {
     [0x1C] = 'a', [0x32] = 'b', [0x21] = 'c', [0x23] = 'd', [0x24] = 'e', [0x2B] = 'f',
     [0x34] = 'g', [0x33] = 'h', [0x43] = 'i', [0x3B] = 'j', [0x42] = 'k', [0x4B] = 'l',
@@ -165,13 +165,13 @@ static const uint8_t ps2_key[0x84] = {
     [0x05] = KEY_F1, [0x06] = KEY_F2, [0x04] = KEY_F3, [0x0C] = KEY_F4, [0x03] = KEY_F5,
     [0x0B] = KEY_F6, [0x83] = KEY_F7, [0x0A] = KEY_F8, [0x01] = KEY_F9, [0x09] = KEY_F10,
     [0x78] = KEY_F11, [0x07] = KEY_F12,
-    // teclado numérico
+    // numeric keypad
     [0x75] = KEY_UPARROW, [0x72] = KEY_DOWNARROW, [0x6B] = KEY_LEFTARROW, [0x74] = KEY_RIGHTARROW,
     [0x6C] = KEY_HOME, [0x69] = KEY_END, [0x7D] = KEY_PGUP, [0x7A] = KEY_PGDN,
     [0x70] = KEY_INS, [0x71] = KEY_DEL, [0x73] = '5', [0x7C] = '*', [0x7B] = '-', [0x79] = '+',
 };
 
-static int ps2_ext_key(uint8_t c)                // tras E0
+static int ps2_ext_key(uint8_t c)                // after E0
 {
     switch (c) {
     case 0x75: return KEY_UPARROW;   case 0x72: return KEY_DOWNARROW;
@@ -181,7 +181,7 @@ static int ps2_ext_key(uint8_t c)                // tras E0
     case 0x7D: return KEY_PGUP; case 0x7A: return KEY_PGDN;
     case 0x14: return KEY_RCTRL; case 0x11: return KEY_RALT;
     case 0x5A: return KEY_ENTER; case 0x4A: return '/';
-    default:   return 0;                         // E0 12 / E0 59 (mayúsculas falsas), etc.
+    default:   return 0;                         // E0 12 / E0 59 (fake shifts), etc.
     }
 }
 
@@ -200,9 +200,9 @@ static void poll_ps2(void)
     }
 }
 
-// mandos: cruceta = flechas; en juego B dispara, A abre/usa, Y corre,
-// X cambia de arma, L/R se desplazan de lado, Start = menú, Select = mapa.
-// En los menús A = aceptar, B = volver; en las preguntas A = sí, B = no.
+// pads: D-pad = arrows; in game B fires, A opens/uses, Y runs,
+// X switches weapon, L/R strafe, Start = menu, Select = map.
+// In menus A = accept, B = back; in prompts A = yes, B = no.
 static int pad_key(uint32_t bit)
 {
     if (bit == PAD_UP)    return KEY_UPARROW;
@@ -234,19 +234,19 @@ static void poll_pads(void)
     static uint32_t btn_idle = 0xFFFFFFFFu, prev_btn;
     static uint8_t sent[12];
     uint32_t s = irq_save();
-    pad_sample();                                // también con las interrupciones apagadas
+    pad_sample();                                // also with interrupts disabled
     uint32_t cur = pad_now, dn = pad_down, up = pad_up;
     pad_down = pad_up = 0;
     irq_restore(s);
     for (int b = 0; b < 12; b++) {
         uint32_t m = 1u << b;
-        // una pulsación entera entre dos lecturas también cuenta (en orden)
+        // a whole press between two reads also counts (in order)
         if ((cur & m) && (up & m)) push(0, sent[b]);
         if (dn & m) { sent[b] = (uint8_t)pad_key(m); push(1, sent[b]); }
         if (!(cur & m) && (up & m)) push(0, sent[b]);
     }
     if (btn_idle == 0xFFFFFFFFu) btn_idle = SYS_BTN;
-    uint32_t bt = SYS_BTN ^ btn_idle;            // polaridad: la del arranque
+    uint32_t bt = SYS_BTN ^ btn_idle;            // polarity: the one at boot
     if ((bt ^ prev_btn) & 1) push(bt & 1, KEY_ESCAPE);
     if ((bt ^ prev_btn) & 2) push((bt >> 1) & 1, KEY_ENTER);
     prev_btn = bt;
@@ -269,13 +269,13 @@ static int any_input(void)
     return 0;
 }
 
-// ---------------------------------------------------------------- salida
-// pantalla ENDOOM: 80x25 caracteres (código, atributo) en celdas de 8x16
-#define FONT_ADDR 0x406F8000u                    // gfx_init copia ahí la fuente 8x8
+// ---------------------------------------------------------------- output
+// ENDOOM screen: 80x25 characters (code, attribute) in 8x16 cells
+#define FONT_ADDR 0x406F8000u                    // gfx_init copies the 8x8 font there
 
 void DG_Endoom(byte *data)
 {
-    gfx_palette_default();                       // los 16 primeros son los de EGA
+    gfx_palette_default();                       // the first 16 are the EGA ones
     while (VID_PENDING & 1) ;
     gfx_target(&shown);
     gfx_clear(0);
@@ -300,8 +300,8 @@ void DG_Endoom(byte *data)
     while (!any_input()) ;
 }
 
-// exit(): con error, muestra los últimos mensajes y espera una tecla; luego
-// reinicia el SoC (vuelve a la ROM de arranque)
+// exit(): on error, shows the last messages and waits for a key; then
+// resets the SoC (back to the boot ROM)
 void _exit(int code)
 {
     irq_disable();
@@ -324,12 +324,12 @@ void _exit(int code)
             if (n) say(line, 15);
         }
         say("", 15);
-        say("pulsa una tecla o un boton para reiniciar", 11);
+        say("press a key or a button to restart", 11);
         delay_ms(500);
         while (any_input()) ;
         while (!any_input()) ;
     }
-    lib_printf("\nreinicio\n");
+    lib_printf("\nrestart\n");
     delay_ms(10);
     SYS_RESET = 0x5EB007u;
     for (;;) ;
@@ -342,7 +342,7 @@ static void fatal(const char *msg)
     for (;;) ;
 }
 
-// ---------------------------------------------------------------- arranque
+// ---------------------------------------------------------------- startup
 #define MAXARG 32
 
 static int read_args(char **argv)
@@ -369,35 +369,35 @@ static int read_args(char **argv)
 int main(void)
 {
     static char *argv[MAXARG];
-    lib_printf("\nDOOM para bltfast\n");
+    lib_printf("\nDOOM for bltfast\n");
     video_init();
-    say("DOOM para bltfast", 14);
-    if (sd_init()) fatal("no hay tarjeta microSD");
+    say("DOOM for bltfast", 14);
+    if (sd_init()) fatal("no microSD card");
     int r = fat_mount();
     if (r) {
         char l[80];
-        snprintf(l, sizeof(l), "no se pudo montar la microSD (error %d)", r);
+        snprintf(l, sizeof(l), "could not mount the microSD (error %d)", r);
         say(l, 12);
         if (r == -1) {
             snprintf(l, sizeof(l), "sd_read: %s (R1=%02x, token=%02x)",
-                     (sd_err & 255) == 1 ? "CMD17 rechazado" : "no llega el token de datos",
+                     (sd_err & 255) == 1 ? "CMD17 rejected" : "data token never arrived",
                      (unsigned)(sd_err >> 8) & 255, (unsigned)(sd_err >> 16) & 255);
             say(l, 12);
         }
-        fatal(r == -1 ? "error de lectura de la tarjeta" :
-              r == -2 ? "el sector 0 no tiene firma 55AA" :
-              r == -3 ? "no hay particion FAT (MBR/GPT)" :
-              r == -5 ? "esta en exFAT: formateala en FAT32" :
-              r == -6 ? "esta en NTFS: formateala en FAT32" :
-                        "la particion no es FAT16/FAT32");
+        fatal(r == -1 ? "card read error" :
+              r == -2 ? "sector 0 has no 55AA signature" :
+              r == -3 ? "no FAT partition (MBR/GPT)" :
+              r == -5 ? "it is exFAT: format it as FAT32" :
+              r == -6 ? "it is NTFS: format it as FAT32" :
+                        "the partition is not FAT16/FAT32");
     }
     int argc = read_args(argv);
     if (argc > 1) {
         char l[80];
-        snprintf(l, sizeof(l), "argumentos (DOOMARGS.TXT): %d", argc - 1);
+        snprintf(l, sizeof(l), "arguments (DOOMARGS.TXT): %d", argc - 1);
         say(l, 7);
     }
-    say("cargando el WAD...", 7);
+    say("loading the WAD...", 7);
     doomgeneric_Create(argc, argv);
     for (;;) doomgeneric_Tick();
 }

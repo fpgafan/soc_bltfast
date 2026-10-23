@@ -1,5 +1,5 @@
 // ============================================================================
-// gfx.c - Gráficos con el blitter (ver gfx.h)
+// gfx.c - Graphics with the blitter (see gfx.h)
 // ============================================================================
 #include "gfx.h"
 #include "lib.h"
@@ -8,7 +8,7 @@ extern const uint8_t font8x8[256 * 8];
 
 surface gfx_screen;
 static surface front;
-static uint32_t font_addr;         // copia de la fuente en la SDRAM (1 bpp, 8 bytes por carácter)
+static uint32_t font_addr;         // copy of the font in SDRAM (1 bpp, 8 bytes per character)
 static const surface *cur_dst;
 
 static inline uint32_t xy(int x, int y) { return ((uint32_t)x & 0xFFFF) | ((uint32_t)y << 16); }
@@ -39,11 +39,11 @@ void gfx_palette_default(void)
         0x555555, 0x5555FF, 0x55FF55, 0x55FFFF, 0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF };
     int i = 0;
     for (; i < 16; i++) PALETTE[i] = ega[i];
-    for (int r = 0; r < 6; r++)                 // 16..267 -> 6x7x6 = 252 colores (16..267 recortado)
+    for (int r = 0; r < 6; r++)                 // 16..267 -> 6x7x6 = 252 colors (16..267 clipped)
         for (int g = 0; g < 7; g++)
             for (int b = 0; b < 6; b++)
                 if (i < 240) PALETTE[i++] = ((r * 51) << 16) | ((g * 85 / 2) << 8) | (b * 51);
-    for (int k = 0; i < 256; i++, k++) {         // 16 grises
+    for (int k = 0; i < 256; i++, k++) {         // 16 grays
         uint32_t v = k * 17;
         PALETTE[i] = (v << 16) | (v << 8) | v;
     }
@@ -54,7 +54,7 @@ void gfx_init(void)
     front      = (surface){ FB0, SCR_W, SCR_H, SCR_W };
     gfx_screen = (surface){ FB1, SCR_W, SCR_H, SCR_W };
     gfx_palette_default();
-    // fuente en la SDRAM (el blitter solo lee de ella); al final del área de FB
+    // font in SDRAM (the blitter only reads from there); at the end of the FB area
     font_addr = 0x406F8000u;
     memcpy((void *)font_addr, font8x8, sizeof(font8x8));
     fence();
@@ -83,7 +83,7 @@ void gfx_flip(void)
     surface t = front; front = gfx_screen; gfx_screen = t;
     VID_FB_BASE = PHYS(front.addr);
     VID_STRIDE  = front.stride;
-    while (VID_PENDING & 1) ;                   // aplicado al empezar el cuadro
+    while (VID_PENDING & 1) ;                   // applied at frame start
     if (cur_dst == &gfx_screen || cur_dst == 0) gfx_target(&gfx_screen);
 }
 
@@ -129,7 +129,7 @@ void gfx_blit_scaled(const surface *src, int sx, int sy, int sw, int sh,
     if (dw <= 0 || dh <= 0) return;
     int32_t du = (int32_t)(((int64_t)sw << 16) / dw);
     int32_t dv = (int32_t)(((int64_t)sh << 16) / dh);
-    int32_t u0 = (du >> 1) & ~0, v0 = (dv >> 1);     // muestreo en el centro del píxel
+    int32_t u0 = (du >> 1) & ~0, v0 = (dv >> 1);     // sampling at the pixel center
     if (du == 0x10000) u0 = 0;
     if (dv == 0x10000) v0 = 0;
     if (flags & GFX_FLIPX) { u0 = ((int32_t)sw << 16) - 1 - u0; du = -du; }
@@ -154,7 +154,7 @@ void gfx_blit(const surface *src, int sx, int sy, int w, int h, int dx, int dy,
 
 void gfx_text_scaled(int x, int y, const char *s, uint8_t fg, int bg, int scale)
 {
-    // cada carácter es una "imagen" de 8x8 bits con stride 1 byte
+    // each character is an 8x8-bit "image" with a 1-byte stride
     BLT_SSTRIDE = 1;
     BLT_COLOR = fg | ((uint32_t)(bg < 0 ? 0 : bg) << 8);
     BLT_U0 = 0; BLT_V0 = 0;

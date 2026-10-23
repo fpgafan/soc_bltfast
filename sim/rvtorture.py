@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-rvtorture.py - Genera programas aleatorios RV32IM para comparar la CPU real
-con un emulador (tools/socemu.js) instrucción a instrucción en resultado.
+rvtorture.py - Generates random RV32IM programs to compare the real CPU
+with an emulator (tools/socemu.js), instruction by instruction, on the result.
 
-  python rvtorture.py SEMILLA salida.S [--n 20000]
+  python rvtorture.py SEED output.S [--n 20000]
 
-El programa ejecuta un cuerpo aleatorio (ALU, MUL/DIV, cargas/stores de 8/16/32
-bits, saltos, llamadas a funciones con prólogo/epílogo en la pila) y al final
-imprime por la UART "SIG <semilla> <crc de registros + memoria>".
+The program runs a random body (ALU, MUL/DIV, 8/16/32-bit loads/stores,
+branches, function calls with prologue/epilogue on the stack) and at the end
+prints over the UART "SIG <seed> <crc of registers + memory>".
 """
 import random, sys, argparse
 
@@ -16,17 +16,17 @@ ap.add_argument("seed", type=int)
 ap.add_argument("out")
 ap.add_argument("--n", type=int, default=20000)
 ap.add_argument("--funcs", type=int, default=24)
-ap.add_argument("--video", action="store_true", help="vídeo + blitter activos durante la prueba")
-ap.add_argument("--io", action="store_true", help="incluir E/S (SYS_SCRATCH) y accesos sin caché")
-ap.add_argument("--cut", type=int, default=0, help="conservar solo las K primeras líneas del cuerpo")
-ap.add_argument("--loops", type=int, default=1, help="repeticiones del cuerpo")
+ap.add_argument("--video", action="store_true", help="video + blitter active during the test")
+ap.add_argument("--io", action="store_true", help="include I/O (SYS_SCRATCH) and uncached accesses")
+ap.add_argument("--cut", type=int, default=0, help="keep only the first K lines of the body")
+ap.add_argument("--loops", type=int, default=1, help="repetitions of the body")
 a = ap.parse_args()
 R = random.Random(a.seed)
 
-# x1 ra, x2 sp, x3 gp, x4 tp (no se usan), x26 = base del buffer A, x27 = base B
+# x1 ra, x2 sp, x3 gp, x4 tp (unused), x26 = base of buffer A, x27 = base B
 POOL = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 28, 29, 30, 31]
-SAVED = [8, 9, 18, 19, 20, 21]          # s0, s1, s2..s5: los conserva cada función
-BUFA, BUFB = 26, 27                     # BUFB = BUFA + 8 KB (mismo índice de caché)
+SAVED = [8, 9, 18, 19, 20, 21]          # s0, s1, s2..s5: preserved by every function
+BUFA, BUFB = 26, 27                     # BUFB = BUFA + 8 KB (same cache index)
 lines = []
 lab = [0]
 
@@ -64,13 +64,13 @@ def body(n, depth, fn_names, leaf):
         elif k < 0.60:
             op = R.choice(["mul", "mulh", "mulhu", "mulhsu", "div", "divu", "rem", "remu"])
             out.append(f"{op} x{d}, x{s1}, x{s2}")
-        elif k < 0.75:                                  # carga
+        elif k < 0.75:                                  # load
             size = R.choice([1, 2, 4])
             op = {1: R.choice(["lb", "lbu"]), 2: R.choice(["lh", "lhu"]), 4: "lw"}[size]
             base = R.choice([BUFA, BUFB])
             off = R.randrange(0, 2048, size)
             out.append(f"{op} x{d}, {off}(x{base})")
-            if R.random() < 0.5:                        # uso inmediato del dato
+            if R.random() < 0.5:                        # immediate use of the data
                 out.append(f"add x{r()}, x{d}, x{r()}")
         elif k < 0.88:                                  # store
             size = R.choice([1, 2, 4])
@@ -78,25 +78,25 @@ def body(n, depth, fn_names, leaf):
             base = R.choice([BUFA, BUFB])
             off = R.randrange(0, 2048, size)
             out.append(f"{op} x{s1}, {off}(x{base})")
-            if R.random() < 0.3:                        # store y load seguidos
+            if R.random() < 0.3:                        # store and load back to back
                 off2 = off & ~3 if R.random() < 0.5 else R.randrange(0, 2048, 4)
                 out.append(f"lw x{d}, {off2}(x{base})")
-        elif a.io and k < 0.91:                         # E/S y SDRAM sin caché (base x4)
+        elif a.io and k < 0.91:                         # I/O and uncached SDRAM (base x4)
             kk = R.random()
             if kk < 0.25:   out.append(f"sw x{s1}, 0x34(x3)")          # SYS_SCRATCH
             elif kk < 0.5:  out.append(f"lw x{d}, 0x34(x3)")
-            elif kk < 0.65: out.append(f"lw x{d}, 0x0C(x3)")           # SYS_CLK_HZ (constante)
+            elif kk < 0.65: out.append(f"lw x{d}, 0x0C(x3)")           # SYS_CLK_HZ (constant)
             elif kk < 0.8:  out.append(f"sw x{s1}, {R.randrange(0, 2048, 4)}(x4)")
             else:           out.append(f"lw x{d}, {R.randrange(0, 2048, 4)}(x4)")
             if R.random() < 0.5: out.append(f"add x{r()}, x{d}, x{r()}")
-        elif k < 0.95:                                  # salto hacia delante
+        elif k < 0.95:                                  # forward branch
             L = newlab()
             op = R.choice(["beq", "bne", "blt", "bge", "bltu", "bgeu"])
             out.append(f"{op} x{s1}, x{s2}, {L}")
             for _ in range(R.randint(1, 4)):
                 out.append(f"addi x{r()}, x{r()}, {imm12()}")
             out.append(f"{L}:")
-        elif k < 0.965 and depth < 2:                   # bucle con salto hacia atrás
+        elif k < 0.965 and depth < 2:                   # loop with a backward branch
             c = R.choice(POOL)
             POOL.remove(c)
             L = newlab()
@@ -107,16 +107,16 @@ def body(n, depth, fn_names, leaf):
             out.append(f"bnez x{c}, {L}")
             POOL.append(c)
             POOL.sort()
-        elif k < 0.975:                                 # carga cuyo valor decide un salto
+        elif k < 0.975:                                 # load whose value decides a branch
             L = newlab()
             base = R.choice([BUFA, BUFB])
             out.append(f"lw x{d}, {R.randrange(0, 2048, 4)}(x{base})")
             out.append(f"{R.choice(['beqz', 'bnez', 'bltz', 'bgez'])} x{d}, {L}")
             out.append(f"xori x{r()}, x{r()}, {imm12()}")
             out.append(f"{L}:")
-        elif fn_names and not leaf and k < 0.99:        # llamada directa
+        elif fn_names and not leaf and k < 0.99:        # direct call
             out.append(f"call {R.choice(fn_names)}")
-        elif fn_names and not leaf:                     # llamada indirecta (puntero a función)
+        elif fn_names and not leaf:                     # indirect call (function pointer)
             t = R.choice(POOL)
             out.append(f"la x{t}, {R.choice(fn_names)}")
             out.append(f"jalr ra, 0(x{t})")
@@ -135,7 +135,7 @@ for i, nm in enumerate(names):
     f = [f"{nm}:", f"addi sp, sp, -{frame}", f"sw ra, {frame - 4}(sp)"]
     for j, s in enumerate(sv):
         f.append(f"sw x{s}, {frame - 8 - 4 * j}(sp)")
-    # la función usa los registros guardados (como hace el compilador)
+    # the function uses the saved registers (as the compiler does)
     pool_bak = list(POOL)
     f += body(R.randint(10, 60), 1, callees, leaf)
     for j, s in enumerate(sv):
@@ -143,14 +143,14 @@ for i, nm in enumerate(names):
     f += [f"lw ra, {frame - 4}(sp)", f"addi sp, sp, {frame}", "ret"]
     funcs.append(f)
 
-# los registros guardados no deben cambiar entre llamadas en el cuerpo principal:
-# el epílogo los restaura, así que cualquier error de carga se nota en la firma
+# the saved registers must not change across calls in the main body:
+# the epilogue restores them, so any load error shows up in the signature
 main = body(a.n, 0, names[: a.funcs // 2], False)
 if a.cut:
     main = main[:a.cut]
     while main and not main[-1].endswith(":") and any(l.endswith(":") and l[:-1] not in "".join(main) for l in []):
         pass
-    # etiquetas de saltos cortados: añadirlas al final
+    # labels of truncated branches: add them at the end
     defined = {l[:-1] for l in main if l.endswith(":")}
     for l in list(main):
         t = l.split()[-1]
@@ -166,8 +166,8 @@ src = [
     "    li x26, 0x40200000",
     "    li x27, 0x40202000",
     "    li x3, 0x80000000",
-    "    li x4, 0x50210000",          # zona sin caché aparte (no es alias de A/B)
-    # memoria inicial conocida
+    "    li x4, 0x50210000",          # separate uncached area (not an alias of A/B)
+    # known initial memory
     "    li t0, 0x40200000",
     "    li t1, 0x40204000",
     "    li t2, 0x9E3779B9",
@@ -185,7 +185,7 @@ src = [
     "    fence",
 ]
 if a.video:
-    # vídeo 640x480 desde 0x40600000 y 30 escalados 320x200 -> 640x480 en cola
+    # 640x480 video from 0x40600000 and 30 queued 320x200 -> 640x480 scalings
     src += ["    li t0, 0x80002000", "    li t1, 0x600000", "    sw t1, 4(t0)", "    li t1, 640", "    sw t1, 8(t0)",
             "    li t1, 5", "    sw t1, 0(t0)",
             "    li t0, 0x80004000", "    li t1, 0x680000", "    sw t1, 4(t0)", "    li t1, 640", "    sw t1, 8(t0)",
@@ -198,22 +198,22 @@ if a.video:
 for k, reg in enumerate(POOL):
     src.append(f"    li x{reg}, {R.randint(-2**31, 2**31 - 1)}")
 if a.loops > 1:
-    src += [f"    li x1, {a.loops}", "    li x2, 0x40205000", "    sw x1, 0(x2)", "    li x2, 0x40600000", "bucle_principal:"]
+    src += [f"    li x1, {a.loops}", "    li x2, 0x40205000", "    sw x1, 0(x2)", "    li x2, 0x40600000", "main_loop:"]
 src += ["    " + l if not l.endswith(":") else l for l in main]
 if a.loops > 1:
     src += ["    li x2, 0x40205000", "    lw x1, 0(x2)", "    addi x1, x1, -1", "    sw x1, 0(x2)",
-            "    li x2, 0x40600000", "    bnez x1, bucle_principal", "    li x1, 0"]
+            "    li x2, 0x40600000", "    bnez x1, main_loop", "    li x1, 0"]
 src += [
-    # firma: registros al buffer C y CRC de A..C
+    # signature: registers into buffer C and CRC of A..C
     "    li t0, 0x40204000",
 ] + [f"    sw x{reg}, {4 * k}(t0)" for k, reg in enumerate(POOL + [1, 2])] + [
     f"    li a0, {a.seed}",
     "    li a1, 0x40200000",
-    f"    li a2, {0x40204000 + 4 * (len(POOL) + 2)}",   # buffers + registros volcados
+    f"    li a2, {0x40204000 + 4 * (len(POOL) + 2)}",   # buffers + dumped registers
     "    call firma",
     "2:  j 2b",
     "",
-    # firma(seed, ini, fin): CRC32 e impresión "SIG seed crc\n"
+    # signature(seed, start, end): CRC32 and printing "SIG seed crc\n"
     "firma:",
     "    mv s0, a0",
     "    li t0, -1",
@@ -240,7 +240,7 @@ src += [
     "    call hex_",
     "    li a0, 10",
     "    call putc_",
-    # LEDs = 0x2A: fin (el emulador para aquí)
+    # LEDs = 0x2A: end (the emulator stops here)
     "    li t0, 0x80000004",
     "    li t1, 0x2A",
     "    sw t1, 0(t0)",

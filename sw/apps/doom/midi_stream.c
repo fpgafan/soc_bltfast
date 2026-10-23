@@ -1,10 +1,10 @@
-// midi_stream.c (GPL v2, como Chocolate Doom) - API de src/midifile.h (Chocolate Doom) que lee los eventos
-// del MIDI sobre la marcha.
-//   midifile.c convierte cada pista en una tabla de midi_event_t (20 bytes por
-//   evento): con las canciones largas de Doom 2 (~20000 eventos) son ~400 KB
-//   y no caben en lo que queda para malloc. Aquí se guarda una copia del
-//   fichero MIDI (≤ ~100 KB) y cada iterador decodifica el evento siguiente
-//   cuando se pide. Los datos de los meta-eventos apuntan dentro de la copia.
+// midi_stream.c (GPL v2, like Chocolate Doom) - src/midifile.h API (Chocolate Doom) that reads the MIDI
+// events on the fly.
+//   midifile.c converts each track into a table of midi_event_t (20 bytes per
+//   event): with the long Doom 2 songs (~20000 events) that is ~400 KB
+//   and does not fit in what is left for malloc. Here a copy of the
+//   MIDI file (≤ ~100 KB) is kept and each iterator decodes the next event
+//   when asked. Meta-event data points into the copy.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,8 +28,8 @@ struct midi_file_s
 struct midi_track_iter_s
 {
     const midi_track_t *track;
-    unsigned int pos, status;           // siguiente byte y "running status"
-    unsigned int next_pos, next_status; // inicio del evento 'next' (punto de bucle)
+    unsigned int pos, status;           // next byte and "running status"
+    unsigned int next_pos, next_status; // start of the 'next' event (loop point)
     unsigned int loop_pos, loop_status;
     boolean have_next, ended;
     midi_event_t next, cur;
@@ -133,7 +133,7 @@ void MIDI_FreeIterator(midi_track_iter_t *iter)
     free(iter);
 }
 
-// ---------------------------------------------------------------- lectura
+// ---------------------------------------------------------------- reading
 static boolean GetByte(midi_track_iter_t *it, byte *b)
 {
     if (it->pos >= it->track->len)
@@ -156,11 +156,11 @@ static boolean GetVarLen(midi_track_iter_t *it, unsigned int *v)
         if ((b & 0x80) == 0)
             return true;
     }
-    return false;                       // más de 4 bytes
+    return false;                       // more than 4 bytes
 }
 
-// decodifica el evento en it->pos sobre it->next; si la pista se acaba sin
-// "fin de pista" (o está dañada) se inventa uno, como si estuviera
+// decodes the event at it->pos into it->next; if the track ends without
+// "end of track" (or is damaged) one is made up, as if it were there
 static void DecodeNext(midi_track_iter_t *it)
 {
     midi_event_t *e = &it->next;
@@ -172,7 +172,7 @@ static void DecodeNext(midi_track_iter_t *it)
     it->have_next = true;
     if (!GetVarLen(it, &e->delta_time) || !GetByte(it, &type))
         goto end_of_track;
-    if ((type & 0x80) == 0)             // "running status": el byte es un dato
+    if ((type & 0x80) == 0)             // "running status": the byte is data
     {
         type = (byte)it->status;
         it->pos--;
@@ -273,7 +273,7 @@ void MIDI_RestartIterator(midi_track_iter_t *iter)
 
 void MIDI_SetLoopPoint(midi_track_iter_t *iter)
 {
-    // el punto de bucle es el evento que se leería a continuación
+    // the loop point is the event that would be read next
     iter->loop_pos = iter->have_next ? iter->next_pos : iter->pos;
     iter->loop_status = iter->have_next ? iter->next_status : iter->status;
 }

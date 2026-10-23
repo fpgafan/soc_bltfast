@@ -1,9 +1,9 @@
 // ============================================================================
-// sd.c - Tarjeta SD en modo SPI (SDSC y SDHC/SDXC)
+// sd.c - SD card in SPI mode (SDSC and SDHC/SDXC)
 // ============================================================================
 #include "lib.h"
 
-static int sd_hc;                 // 1 = direccionamiento por bloques
+static int sd_hc;                 // 1 = block addressing
 
 static uint8_t spi(uint8_t b)
 {
@@ -14,7 +14,7 @@ static uint8_t spi(uint8_t b)
 
 static void cs(int on, int div) { SD_CTRL = (uint32_t)(div << 8) | (on ? 1u : 0u); }
 
-static int sd_div = 123;          // 400 kHz al iniciar
+static int sd_div = 123;          // 400 kHz at init
 
 static uint8_t cmd(uint8_t c, uint32_t arg, uint8_t crc)
 {
@@ -34,10 +34,10 @@ int sd_init(void)
 {
     sd_div = 123;
     cs(0, sd_div);
-    for (int i = 0; i < 10; i++) spi(0xFF);           // 80 relojes con CS alto
-    // si la placa se reinició a mitad de una lectura la tarjeta (que no se ha
-    // apagado) sigue con el bloque pendiente y no responde al primer CMD0:
-    // vaciarlo con relojes con CS bajo y reintentar
+    for (int i = 0; i < 10; i++) spi(0xFF);           // 80 clocks with CS high
+    // if the board was reset in the middle of a read, the card (which was not
+    // powered off) is still sending the pending block and ignores the first CMD0:
+    // drain it with clocks with CS low and retry
     int r0 = 0xFF;
     for (int t = 0; t < 8 && r0 != 0x01; t++) {
         cs(1, sd_div);
@@ -67,16 +67,16 @@ int sd_init(void)
         sd_hc = (ocr & 0x40) != 0;
     }
     if (!sd_hc) cmd(16, 512, 0x15);
-    // 90 / 10 = 9 MHz. Con DIV = 2 (16,5 MHz a 99 MHz de sistema) MISO se
-    // muestrea demasiado pronto tras el flanco de bajada (sincronizador de 2
-    // ciclos + retardo de la tarjeta) y se lee el bit anterior: con una SD de
-    // 16 GB fallaba todo a DIV = 2 y DIV = 3..8 iba bien (apps/sdtest)
+    // 90 / 10 = 9 MHz. With DIV = 2 (16.5 MHz at 99 MHz system clock) MISO is
+    // sampled too early after the falling edge (2-cycle synchronizer
+    // + card delay) and the previous bit is read: with a 16 GB SD
+    // everything failed at DIV = 2 while DIV = 3..8 worked (apps/sdtest)
     sd_div = 4;
     cs(1, sd_div);
     return 0;
 }
 
-uint32_t sd_err;                  // último error: código | R1 << 8 | token << 16
+uint32_t sd_err;                  // last error: code | R1 << 8 | token << 16
 
 int sd_read(uint32_t lba, void *dst)
 {
@@ -106,10 +106,10 @@ int sd_write(uint32_t lba, const void *src)
     if (cmd(24, sd_hc ? lba : lba * 512u, 0x01) != 0x00) return -1;
     SD_BLOCK = 2;
     while (SD_STAT & 1) ;
-    uint8_t r = spi(0xFF);                             // respuesta de datos
+    uint8_t r = spi(0xFF);                             // data response
     if ((r & 0x1F) != 0x05) return -2;
     uint32_t t0 = time_us();
-    while (spi(0xFF) == 0x00)                          // ocupada
+    while (spi(0xFF) == 0x00)                          // busy
         if (time_us() - t0 > 500000u) return -3;
     return 0;
 }

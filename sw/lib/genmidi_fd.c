@@ -1,7 +1,7 @@
-// genmidi_fd.c - Instrumentos FM (formato GENMIDI de DMX: 128 melódicos +
-// 47 de percusión, notas 35-81) del proyecto Freedoom, para lib/oplsynth.c.
-// Extraído del lump GENMIDI de freedoom2.wad 0.13.0 (sin la cabecera
-// "#OPL_II#" ni los nombres).
+// genmidi_fd.c - FM instruments (DMX GENMIDI format: 128 melodic +
+// 47 percussion, notes 35-81) from the Freedoom project, for lib/oplsynth.c.
+// Extracted from the GENMIDI lump of freedoom2.wad 0.13.0 (without the
+// "#OPL_II#" header or the names).
 //
 // Copyright (c) 2001-2024 Contributors to the Freedoom project.
 // All rights reserved.

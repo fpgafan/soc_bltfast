@@ -1,7 +1,7 @@
 // ============================================================================
-// w_file_bltfast.c - Acceso a los WAD sin el búfer de stdio: open/lseek/read
-// van directos a la FAT (con la tabla de clusters, saltar a un lump es O(1)).
-// Sustituye a w_file_stdc.c (mismo nombre de clase, lo usa w_file.c).
+// w_file_bltfast.c - WAD access without the stdio buffer: open/lseek/read
+// go straight to the FAT (with the cluster table, seeking to a lump is O(1)).
+// Replaces w_file_stdc.c (same class name, used by w_file.c).
 // ============================================================================
 #include <fcntl.h>
 #include <unistd.h>

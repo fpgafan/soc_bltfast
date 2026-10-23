@@ -1,34 +1,34 @@
 #!/usr/bin/env python3
 """
-midi2c.py - Convierte un fichero MIDI (.mid) a una cabecera C para el
-reproductor MIDI del SoC bltfast (sw/lib/midi.c).
+midi2c.py - Converts a MIDI file (.mid) into a C header for the
+bltfast SoC MIDI player (sw/lib/midi.c).
 
-    python tools/midi2c.py cancion.mid sw/apps/mi_app/cancion.h [opciones]
+    python tools/midi2c.py song.mid sw/apps/my_app/song.h [options]
 
-El reproductor del SoC lee MIDI estándar directamente (tipo 0 y 1, hasta 32
-pistas, cambios de tempo, programas General MIDI, volumen, expresión, pan y
-pitch bend; batería en el canal 10) y lo toca con 24 voces de hardware, así que
-el fichero se guarda tal cual. Esta herramienta lo comprueba, informa de lo que
-puede dar problemas y, si se pide, lo modifica:
+The SoC player reads standard MIDI directly (type 0 and 1, up to 32
+tracks, tempo changes, General MIDI programs, volume, expression, pan and
+pitch bend; drums on channel 10) and plays it with 24 hardware voices, so
+the file is stored as is. This tool checks it, reports anything that
+may cause trouble and, if asked, modifies it:
 
-    --nombre N          nombre del array (por defecto, el del archivo .h)
-    --transponer S      subir/bajar S semitonos (no afecta a la batería)
-    --sin-bateria       quitar el canal 10
-    --canales 1,2,3     quedarse solo con esos canales (1..16)
-    --tempo F           multiplicar la velocidad por F (1.5 = un 50 % más rápido)
-    --max-seg S         cortar a los S segundos
-    --vol V             escalar las velocidades de las notas (1.0 = igual)
+    --name N            array name (default: the name of the .h file)
+    --transpose S       shift up/down S semitones (does not affect drums)
+    --no-drums          remove channel 10
+    --channels 1,2,3    keep only those channels (1..16)
+    --tempo F           multiply the speed by F (1.5 = 50 % faster)
+    --max-sec S         cut at S seconds
+    --vol V             scale note velocities (1.0 = unchanged)
 
-Genera:
-    #define NOMBRE_LEN   bytes
-    #define NOMBRE_SEG   duración aproximada en segundos
-    static const uint8_t nombre[]   el fichero SMF
+Generates:
+    #define NAME_LEN   bytes
+    #define NAME_SEC   approximate duration in seconds
+    static const uint8_t name[]   the SMF file
 
-En C:
-    #include "cancion.h"
+In C:
+    #include "song.h"
     snd_init();
-    if (midi_load(cancion, CANCION_LEN) == 0) midi_play(1);     // 1 = en bucle
-    for (;;) { midi_update(); ... }                             // a menudo (>= 200 Hz)
+    if (midi_load(song, SONG_LEN) == 0) midi_play(1);           // 1 = loop
+    for (;;) { midi_update(); ... }                             // often (>= 200 Hz)
 """
 import argparse
 import os
@@ -40,9 +40,9 @@ MIDI_VOICES = 24        # sw/lib/audio.h
 MAXTRK = 32             # sw/lib/midi.c
 DRUM_CH = 9
 
-GM_FAMILIA = ["piano", "percusión cromática", "órgano", "guitarra", "bajo", "cuerdas",
-              "conjunto", "metales", "lengüetas", "flautas", "sintetizador solista",
-              "sintetizador de fondo", "efectos de sintetizador", "étnicos", "percusión", "efectos"]
+GM_FAMILY = ["piano", "chromatic percussion", "organ", "guitar", "bass", "strings",
+             "ensemble", "brass", "reed", "pipe", "synth lead",
+             "synth pad", "synth effects", "ethnic", "percussive", "sound effects"]
 
 
 def varlen(d, i):
@@ -62,26 +62,26 @@ def vlq(n):
     return bytes(reversed(b))
 
 
-def leer_smf(data):
-    """Devuelve (formato, división, pistas); cada pista es una lista de
-    (tick_absoluto, bytes_del_evento) con el estado explícito."""
+def read_smf(data):
+    """Returns (format, division, tracks); each track is a list of
+    (absolute_tick, event_bytes) with an explicit status byte."""
     if data[:4] != b"MThd":
-        sys.exit("no es un fichero MIDI estándar (falta MThd)")
+        sys.exit("not a standard MIDI file (MThd missing)")
     hl, fmt, ntrk, div = struct.unpack(">IHHH", data[4:14])
     if div & 0x8000:
-        sys.exit("división SMPTE: el reproductor del SoC no la admite")
+        sys.exit("SMPTE division: not supported by the SoC player")
     if fmt == 2:
-        sys.exit("MIDI de tipo 2 (pistas independientes): no admitido")
+        sys.exit("type 2 MIDI (independent tracks): not supported")
     i = 8 + hl
-    pistas = []
+    tracks = []
     while i + 8 <= len(data):
-        tipo, l = data[i:i + 4], struct.unpack(">I", data[i + 4:i + 8])[0]
-        j, fin = i + 8, min(i + 8 + l, len(data))
+        kind, l = data[i:i + 4], struct.unpack(">I", data[i + 4:i + 8])[0]
+        j, end = i + 8, min(i + 8 + l, len(data))
         i += 8 + l
-        if tipo != b"MTrk":
+        if kind != b"MTrk":
             continue
         ev, t, run = [], 0, 0
-        while j < fin:
+        while j < end:
             dt, j = varlen(data, j)
             t += dt
             st = data[j]
@@ -91,7 +91,7 @@ def leer_smf(data):
                     run = st
             else:
                 if not run:
-                    sys.exit("fichero dañado: datos sin byte de estado")
+                    sys.exit("damaged file: data without a status byte")
                 st = run
             if st == 0xFF:
                 typ = data[j]
@@ -108,72 +108,72 @@ def leer_smf(data):
                 n = 1 if st & 0xF0 in (0xC0, 0xD0) else 2
                 ev.append((t, bytes([st]) + data[j:j + n]))
                 j += n
-        pistas.append(ev)
-    if not pistas:
-        sys.exit("el fichero no tiene pistas")
-    return fmt, div, pistas
+        tracks.append(ev)
+    if not tracks:
+        sys.exit("the file has no tracks")
+    return fmt, div, tracks
 
 
-def mapa_tempo(pistas):
-    cambios = sorted((t, int.from_bytes(e[3:6], "big")) for p in pistas for t, e in p
+def tempo_map(tracks):
+    changes = sorted((t, int.from_bytes(e[3:6], "big")) for p in tracks for t, e in p
                      if e[0] == 0xFF and e[1] == 0x51 and len(e) >= 6)
-    return cambios
+    return changes
 
 
-def tick_a_seg(tick, cambios, div):
-    seg, t0, us = 0.0, 0, 500000
-    for t, nuevo in cambios:
+def tick_to_sec(tick, changes, div):
+    sec, t0, us = 0.0, 0, 500000
+    for t, new in changes:
         if t >= tick:
             break
-        seg += (t - t0) * us / div / 1e6
-        t0, us = t, nuevo
-    return seg + (tick - t0) * us / div / 1e6
+        sec += (t - t0) * us / div / 1e6
+        t0, us = t, new
+    return sec + (tick - t0) * us / div / 1e6
 
 
-def seg_a_tick(s, cambios, div):
+def sec_to_tick(s, changes, div):
     t0, us, acc = 0, 500000, 0.0
-    for t, nuevo in cambios:
+    for t, new in changes:
         d = (t - t0) * us / div / 1e6
         if acc + d >= s:
             break
         acc += d
-        t0, us = t, nuevo
+        t0, us = t, new
     return t0 + int((s - acc) * 1e6 * div / us)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("midi")
-    ap.add_argument("salida")
-    ap.add_argument("--nombre")
-    ap.add_argument("--transponer", type=int, default=0)
-    ap.add_argument("--sin-bateria", action="store_true")
-    ap.add_argument("--canales")
+    ap.add_argument("output")
+    ap.add_argument("--name")
+    ap.add_argument("--transpose", type=int, default=0)
+    ap.add_argument("--no-drums", action="store_true")
+    ap.add_argument("--channels")
     ap.add_argument("--tempo", type=float, default=1.0)
-    ap.add_argument("--max-seg", type=float, default=0)
+    ap.add_argument("--max-sec", type=float, default=0)
     ap.add_argument("--vol", type=float, default=1.0)
     a = ap.parse_args()
 
-    nombre = re.sub(r"\W", "_", a.nombre or os.path.splitext(os.path.basename(a.salida))[0])
-    if nombre[0].isdigit():
-        nombre = "_" + nombre
-    NOM = nombre.upper()
+    name = re.sub(r"\W", "_", a.name or os.path.splitext(os.path.basename(a.output))[0])
+    if name[0].isdigit():
+        name = "_" + name
+    NAME = name.upper()
 
     data = open(a.midi, "rb").read()
-    fmt, div, pistas = leer_smf(data)
-    canales = {int(c) - 1 for c in a.canales.split(",")} if a.canales else None
+    fmt, div, tracks = read_smf(data)
+    channels = {int(c) - 1 for c in a.channels.split(",")} if a.channels else None
     if a.tempo <= 0:
-        sys.exit("--tempo debe ser > 0")
-    modificar = bool(a.transponer or a.sin_bateria or canales is not None or a.tempo != 1.0
-                     or a.max_seg or a.vol != 1.0)
+        sys.exit("--tempo must be > 0")
+    modify = bool(a.transpose or a.no_drums or channels is not None or a.tempo != 1.0
+                  or a.max_sec or a.vol != 1.0)
 
-    if modificar:
-        corte = seg_a_tick(a.max_seg * a.tempo, mapa_tempo(pistas), div) if a.max_seg else None
-        nuevas = []
-        for k, p in enumerate(pistas):
+    if modify:
+        cut = sec_to_tick(a.max_sec * a.tempo, tempo_map(tracks), div) if a.max_sec else None
+        new_tracks = []
+        for k, p in enumerate(tracks):
             q = []
             for t, e in p:
-                if corte is not None and t > corte:
+                if cut is not None and t > cut:
                     break
                 st = e[0]
                 if st == 0xFF and e[1] == 0x2F:
@@ -183,10 +183,10 @@ def main():
                     e = e[:3] + us.to_bytes(3, "big")
                 elif st < 0xF0:
                     c = st & 15
-                    if (canales is not None and c not in canales) or (a.sin_bateria and c == DRUM_CH):
+                    if (channels is not None and c not in channels) or (a.no_drums and c == DRUM_CH):
                         continue
-                    if st & 0xF0 in (0x80, 0x90, 0xA0) and c != DRUM_CH and a.transponer:
-                        n = e[1] + a.transponer
+                    if st & 0xF0 in (0x80, 0x90, 0xA0) and c != DRUM_CH and a.transpose:
+                        n = e[1] + a.transpose
                         if not 0 <= n <= 127:
                             continue
                         e = bytes([st, n]) + e[2:]
@@ -195,15 +195,15 @@ def main():
                 q.append((t, e))
             if a.tempo != 1.0 and k == 0 and not any(e[0] == 0xFF and e[1] == 0x51 for _, e in q):
                 q.insert(0, (0, b"\xff\x51\x03" + round(500000 / a.tempo).to_bytes(3, "big")))
-            if corte is not None:                       # apagar lo que siga sonando
+            if cut is not None:                         # silence whatever is still sounding
                 for c in sorted({e[0] & 15 for _, e in q if e[0] < 0xF0}):
-                    q.append((corte, bytes([0xB0 | c, 123, 0])))
-            fin = max([t for t, _ in q], default=0)
-            q.append((fin, b"\xff\x2f\x00"))
-            nuevas.append(q)
-        pistas = nuevas
-        out = b"MThd" + struct.pack(">IHHH", 6, 1 if len(pistas) > 1 else 0, len(pistas), div)
-        for p in pistas:
+                    q.append((cut, bytes([0xB0 | c, 123, 0])))
+            end = max([t for t, _ in q], default=0)
+            q.append((end, b"\xff\x2f\x00"))
+            new_tracks.append(q)
+        tracks = new_tracks
+        out = b"MThd" + struct.pack(">IHHH", 6, 1 if len(tracks) > 1 else 0, len(tracks), div)
+        for p in tracks:
             body, last = b"", 0
             for t, e in p:
                 body += vlq(t - last) + e
@@ -211,59 +211,59 @@ def main():
             out += b"MTrk" + struct.pack(">I", len(body)) + body
         data = out
 
-    # ------------------------------------------------------------ informe
-    cambios = mapa_tempo(pistas)
-    ev = sorted(((t, e) for p in pistas for t, e in p if e[0] < 0xF0), key=lambda x: x[0])
-    notas, activas, maxpoli, progs, bend = 0, set(), 0, {}, False
-    usados = set()
+    # ------------------------------------------------------------ report
+    changes = tempo_map(tracks)
+    ev = sorted(((t, e) for p in tracks for t, e in p if e[0] < 0xF0), key=lambda x: x[0])
+    notes, active, maxpoly, progs, bend = 0, set(), 0, {}, False
+    used = set()
     for t, e in ev:
         st, c = e[0] & 0xF0, e[0] & 15
         if st == 0x90 and e[2]:
-            usados.add(c)
-            notas += 1
+            used.add(c)
+            notes += 1
             if c != DRUM_CH:
-                activas.add((c, e[1]))
-                maxpoli = max(maxpoli, len(activas))
+                active.add((c, e[1]))
+                maxpoly = max(maxpoly, len(active))
         elif st == 0x80 or (st == 0x90 and not e[2]):
-            activas.discard((c, e[1]))
+            active.discard((c, e[1]))
         elif st == 0xC0:
             progs.setdefault(c, e[1])
         elif st == 0xE0:
             bend = True
-    fin = max((t for p in pistas for t, _ in p), default=0)
-    dur = tick_a_seg(fin, cambios, div)
+    end = max((t for p in tracks for t, _ in p), default=0)
+    dur = tick_to_sec(end, changes, div)
 
-    guarda = "ASSET_" + NOM + "_INCLUDED"
-    lines = [f"// {os.path.basename(a.salida)} - generado por tools/midi2c.py a partir de "
+    guard = "ASSET_" + NAME + "_INCLUDED"
+    lines = [f"// {os.path.basename(a.output)} - generated by tools/midi2c.py from "
              f"{os.path.basename(a.midi)}",
-             f"// {len(pistas)} pistas, {notas} notas, {dur:.1f} s"
-             + (" (modificado)" if modificar else ""),
-             f"#ifndef {guarda}\n#define {guarda}\n#include <stdint.h>\n",
-             f"#define {NOM}_LEN {len(data)}",
-             f"#define {NOM}_SEG {round(dur)}\n",
-             f"static const uint8_t {nombre}[{len(data)}] __attribute__((aligned(4))) = {{"]
+             f"// {len(tracks)} tracks, {notes} notes, {dur:.1f} s"
+             + (" (modified)" if modify else ""),
+             f"#ifndef {guard}\n#define {guard}\n#include <stdint.h>\n",
+             f"#define {NAME}_LEN {len(data)}",
+             f"#define {NAME}_SEC {round(dur)}\n",
+             f"static const uint8_t {name}[{len(data)}] __attribute__((aligned(4))) = {{"]
     for i in range(0, len(data), 16):
         lines.append("    " + ",".join(f"0x{b:02x}" for b in data[i:i + 16]) + ",")
     lines.append("};\n\n#endif")
-    os.makedirs(os.path.dirname(os.path.abspath(a.salida)), exist_ok=True)
-    with open(a.salida, "w", newline="\n") as f:
+    os.makedirs(os.path.dirname(os.path.abspath(a.output)), exist_ok=True)
+    with open(a.output, "w", newline="\n") as f:
         f.write("\n".join(lines) + "\n")
 
-    print(f"{a.salida}: {nombre}, {len(data)} bytes, MIDI tipo {1 if len(pistas) > 1 else fmt}, "
-          f"{len(pistas)} pistas, {notas} notas, {dur:.1f} s")
-    for c in sorted(usados):
+    print(f"{a.output}: {name}, {len(data)} bytes, MIDI type {1 if len(tracks) > 1 else fmt}, "
+          f"{len(tracks)} tracks, {notes} notes, {dur:.1f} s")
+    for c in sorted(used):
         if c == DRUM_CH:
-            print(f"  canal 10: batería")
+            print(f"  channel 10: drums")
         else:
             p = progs.get(c, 0)
-            print(f"  canal {c + 1}: programa {p + 1} ({GM_FAMILIA[p // 8]})")
-    print(f"  polifonía máxima (sin batería): {maxpoli} notas a la vez")
-    if maxpoli > MIDI_VOICES:
-        print(f"  AVISO: más de {MIDI_VOICES} notas a la vez; el reproductor robará voces")
-    if len(pistas) > MAXTRK:
-        print(f"  AVISO: {len(pistas)} pistas; el reproductor solo lee las {MAXTRK} primeras")
+            print(f"  channel {c + 1}: program {p + 1} ({GM_FAMILY[p // 8]})")
+    print(f"  max polyphony (without drums): {maxpoly} simultaneous notes")
+    if maxpoly > MIDI_VOICES:
+        print(f"  WARNING: more than {MIDI_VOICES} simultaneous notes; the player will steal voices")
+    if len(tracks) > MAXTRK:
+        print(f"  WARNING: {len(tracks)} tracks; the player only reads the first {MAXTRK}")
     if bend:
-        print("  usa pitch bend (el SoC lo aplica con ±2 semitonos)")
+        print("  uses pitch bend (the SoC applies it with ±2 semitones)")
 
 
 if __name__ == "__main__":

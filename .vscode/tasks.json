@@ -1,8 +1,8 @@
 {
-    // Tareas del SoC bltfast (Tang Nano 20K).
-    //   Ctrl+Shift+B          -> compila la app del archivo abierto (apps/<app>/...) o el .c
-    //                            suelto, la carga por UART y abre el terminal
-    //   Ctrl+Shift+P > "Tasks: Run Task" -> el resto
+    // Tasks for the bltfast SoC (Tang Nano 20K).
+    //   Ctrl+Shift+B          -> builds the app of the open file (apps/<app>/...) or the loose
+    //                            .c, loads it over UART and opens the terminal
+    //   Ctrl+Shift+P > "Tasks: Run Task" -> the rest
     "version": "2.0.0",
     "options": {
         "cwd": "${workspaceFolder}/sw"
@@ -15,8 +15,8 @@
     },
     "tasks": [
         {
-            "label": "Compilar y ejecutar el archivo abierto",
-            "detail": "python build.py --src <archivo> --run  (su app de apps/ o el .c suelto; Ctrl+C para salir)",
+            "label": "Build and run the open file",
+            "detail": "python build.py --src <file> --run  (its app in apps/ or the loose .c; Ctrl+C to quit)",
             "type": "shell",
             "command": "python",
             "args": ["build.py", "--src", "${file}", "--run"],
@@ -27,7 +27,7 @@
             }
         },
         {
-            "label": "Compilar y ejecutar una app",
+            "label": "Build and run an app",
             "detail": "python build.py <app> --run",
             "type": "shell",
             "command": "python",
@@ -39,8 +39,8 @@
             }
         },
         {
-            "label": "Compilar el archivo abierto",
-            "detail": "python build.py --src <archivo>  (sin cargar)",
+            "label": "Build the open file",
+            "detail": "python build.py --src <file>  (without loading)",
             "type": "shell",
             "command": "python",
             "args": ["build.py", "--src", "${file}"],
@@ -51,24 +51,24 @@
             }
         },
         {
-            "label": "Terminal serie",
-            "detail": "Ver la salida de la placa sin recargar el programa (Ctrl+C para salir)",
+            "label": "Serial terminal",
+            "detail": "Watch the board output without reloading the program (Ctrl+C to quit)",
             "type": "shell",
             "command": "python",
             "args": ["../tools/load.py", "--monitor-only"],
             "problemMatcher": []
         },
         {
-            "label": "Cargar el .fs actual en la FPGA (sin sintetizar)",
-            "detail": "python build.py --prog  (~6 s; tras desconectar la placa, si no has cambiado rtl/)",
+            "label": "Load the current .fs into the FPGA (no synthesis)",
+            "detail": "python build.py --prog  (~6 s; after unplugging the board, if rtl/ has not changed)",
             "type": "shell",
             "command": "python",
             "args": ["build.py", "--prog"],
             "problemMatcher": []
         },
         {
-            "label": "ROM: compilar, sintetizar y cargar en la FPGA (temporal)",
-            "detail": "python build.py boot --bit --prog  (se pierde al desconectar la placa)",
+            "label": "ROM: build, synthesize and load into the FPGA (temporary)",
+            "detail": "python build.py boot --bit --prog  (lost when the board is unplugged)",
             "type": "shell",
             "command": "python",
             "args": ["build.py", "boot", "--bit", "--prog"],
@@ -78,7 +78,7 @@
             }
         },
         {
-            "label": "ROM: compilar, sintetizar y grabar en la flash (permanente)",
+            "label": "ROM: build, synthesize and write to flash (permanent)",
             "detail": "python build.py boot --bit --flash",
             "type": "shell",
             "command": "python",
@@ -93,7 +93,7 @@
         {
             "id": "app",
             "type": "pickString",
-            "description": "App de sw/apps/",
+            "description": "App from sw/apps/",
             "options": ["demo", "hello"],
             "default": "demo"
         }

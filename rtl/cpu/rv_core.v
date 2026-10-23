@@ -1,26 +1,26 @@
 // ============================================================================
-// rv_core.v - Núcleo RV32IM_Zicsr segmentado en 6 etapas, pensado para Fmax
+// rv_core.v - 6-stage pipelined RV32IM_Zicsr core, designed for Fmax
 //
-//   F1  : cálculo del siguiente PC -> dirección de la BSRAM de la icache
-//   F2  : salida de la icache + comparación de etiqueta; pre-cálculo del
-//         destino de saltos (PC + imm) y predicción estática (BTFN + JAL + RAS)
-//   D   : decodificación, banco de registros (RAM distribuida), bypass de W,
-//         selección de adelantamiento pre-calculada, interbloqueo carga-uso
-//   E   : ALU, comparación de saltos, AGU -> dirección de la BSRAM de la dcache,
-//         multiplicación / división (multiciclo, detiene solo D/E)
-//   M   : salida de la dcache + etiqueta, alineación de cargas, stores
-//         (dcache + buffer de stores), CSR, excepciones, MRET, FENCE
-//   W   : escritura del banco de registros
+//   F1  : next-PC computation -> icache BSRAM address
+//   F2  : icache output + tag compare; precomputation of the
+//         branch target (PC + imm) and static prediction (BTFN + JAL + RAS)
+//   D   : decode, register file (distributed RAM), W bypass,
+//         precomputed forwarding select, load-use interlock
+//   E   : ALU, branch compare, AGU -> dcache BSRAM address,
+//         multiply / divide (multicycle, stalls only D/E)
+//   M   : dcache output + tag, load alignment, stores
+//         (dcache + store buffer), CSR, exceptions, MRET, FENCE
+//   W   : register file write-back
 //
-// Filosofía para Fmax: ninguna señal "tardía" (acierto de caché) llega a las
-// habilitaciones de todo el pipeline. Un fallo de la dcache, un acceso no
-// cacheable o un buffer de stores lleno en M provocan un *replay*: la
-// instrucción y las posteriores se anulan y se vuelve a buscar desde su PC
-// (redirección registrada). D espera mientras la unidad de memoria está
-// ocupada. Un fallo de la icache solo afecta a la búsqueda.
+// Fmax philosophy: no "late" signal (cache hit) reaches the enables of
+// the whole pipeline. A dcache miss, an uncacheable access or a full
+// store buffer in M cause a *replay*: the instruction and the
+// following ones are squashed and fetching restarts from its PC
+// (registered redirect). D waits while the memory unit is
+// busy. An icache miss only affects fetch.
 //
-// Penalizaciones: salto predicho tomado 1 ciclo, fallo de predicción 3,
-// carga-uso 1, store seguido de load 1, MUL 3, DIV ~34.
+// Penalties: predicted-taken branch 1 cycle, misprediction 3,
+// load-use 1, store followed by load 1, MUL 3, DIV ~34.
 // ============================================================================
 `default_nettype none
 module rv_core #(
@@ -28,29 +28,29 @@ module rv_core #(
 )(
     input  wire        clk,
     input  wire        rst,
-    // ---------------- icache (lectura en F1/F2)
-    output wire        ic_en,          // la BSRAM captura ic_addr en este flanco
+    // ---------------- icache (read in F1/F2)
+    output wire        ic_en,          // the BSRAM latches ic_addr on this edge
     output wire [31:0] ic_addr,
-    input  wire [31:0] ic_rdata,       // instrucción de la última dirección capturada
+    input  wire [31:0] ic_rdata,       // instruction at the last latched address
     input  wire        ic_hit,
-    output reg         ic_fill_req,    // nivel hasta ic_fill_done
+    output reg         ic_fill_req,    // level until ic_fill_done
     output reg  [31:0] ic_fill_addr,
-    input  wire        ic_fill_done,   // pulso
-    output reg         ic_inval_req,   // FENCE.I: nivel hasta ic_inval_done
+    input  wire        ic_fill_done,   // pulse
+    output reg         ic_inval_req,   // FENCE.I: level until ic_inval_done
     input  wire        ic_inval_done,
-    // ---------------- dcache (dirección en E, dato en M)
+    // ---------------- dcache (address in E, data in M)
     output wire [31:0] dc_addr,
     input  wire [31:0] dc_rdata,
     input  wire        dc_hit,
-    output wire [3:0]  dc_wbe,         // escritura de store (en M)
+    output wire [3:0]  dc_wbe,         // store write (in M)
     output wire [31:0] dc_waddr,
     output wire [31:0] dc_wdata,
-    // ---------------- unidad de memoria
-    output wire        mreq,           // pulso: fallo de carga / carga no cacheable
+    // ---------------- memory unit
+    output wire        mreq,           // pulse: load miss / uncacheable load
     output wire [31:0] mreq_addr,
-    output wire        mreq_fence,     // pulso: FENCE (vaciar SB + invalidar dcache)
-    input  wire        mem_hold,       // la unidad de memoria atiende un replay
-    input  wire        io_valid,       // dato de una carga no cacheable disponible
+    output wire        mreq_fence,     // pulse: FENCE (drain SB + invalidate dcache)
+    input  wire        mem_hold,       // the memory unit is serving a replay
+    input  wire        io_valid,       // data of an uncacheable load available
     input  wire [31:0] io_addr,
     input  wire [31:0] io_rdata,
     output wire        io_take,
@@ -59,15 +59,15 @@ module rv_core #(
     output wire [31:0] sb_data,
     output wire [3:0]  sb_strb,
     input  wire        sb_full,
-    // ---------------- interrupciones
+    // ---------------- interrupts
     input  wire        irq_ext,
     input  wire        irq_timer,
     input  wire        irq_soft,
-    // ---------------- depuración / medidas
+    // ---------------- debug / measurements
     output wire [63:0] dbg_instret
 );
     // ========================================================================
-    // Constantes
+    // Constants
     // ========================================================================
     localparam [6:0] OP_LUI = 7'b0110111, OP_AUIPC = 7'b0010111, OP_JAL = 7'b1101111,
                      OP_JALR = 7'b1100111, OP_BR = 7'b1100011, OP_LD = 7'b0000011,
@@ -75,20 +75,20 @@ module rv_core #(
                      OP_MISC = 7'b0001111, OP_SYS = 7'b1110011;
 
     // ========================================================================
-    // Señales de redirección (todas registradas)
+    // Redirect signals (all registered)
     // ========================================================================
-    reg        redirect_q;          // fallo de predicción en E o flush en M
+    reg        redirect_q;          // misprediction in E or flush in M
     reg [31:0] flush_pc_q, mis_pc_q;
-    reg        flush_q;             // flush en M (anula también M)
+    reg        flush_q;             // flush in M (also squashes M)
     wire [31:0] redirect_pc_q = flush_q ? flush_pc_q : mis_pc_q;
-    wire       kill_DE = redirect_q;   // anula D y E
+    wire       kill_DE = redirect_q;   // squashes D and E
 
     // ========================================================================
-    // F1/F2: búsqueda
+    // F1/F2: fetch
     // ========================================================================
     localparam F_RUN = 2'd0, F_FILL = 2'd1, F_INV = 2'd2, F_GO = 2'd3;
     reg [1:0]  fstate;
-    reg [31:0] pcF;                 // dirección de la instrucción en F2
+    reg [31:0] pcF;                 // address of the instruction in F2
     reg [31:0] resume_pc;
     reg        fencei_pend;
 
@@ -97,18 +97,18 @@ module rv_core #(
     reg [31:0] irD, pcD, tgtD;
     reg        predD, doneD;
 
-    wire       stallD;              // definido más abajo
-    wire       fencei_commit;       // FENCE.I retirándose en M
+    wire       stallD;              // defined below
+    wire       fencei_commit;       // FENCE.I retiring in M
 
-    // predicción en D (registrada desde F2): salto hacia el destino pre-calculado
+    // prediction in D (registered from F2): jump to the precomputed target
     wire d_redir = vD & predD & ~doneD & ~redirect_q;
 
-    // RAS (pila de direcciones de retorno), 4 entradas
+    // RAS (return address stack), 4 entries
     reg [31:0] ras [0:3];
     reg [1:0]  ras_sp;
     wire [31:0] ras_top = ras[ras_sp];
 
-    // pre-decodificación en F2
+    // predecode in F2
     wire [31:0] fi       = ic_rdata;
     wire        f_jal    = fi[6:0] == OP_JAL;
     wire        f_br     = fi[6:0] == OP_BR;
@@ -120,11 +120,11 @@ module rv_core #(
     wire [31:0] f_tgt    = pcF + (fi[2] ? f_immj : f_immb);
     wire        f_pred   = f_jal | (f_br & fi[31]) | f_ret;
 
-    // control de la búsqueda
+    // fetch control
     reg         f_en;
     reg  [31:0] f_next;
     wire        f2_ok    = (fstate == F_RUN) & ic_hit;
-    // (un fallo arranca el relleno aunque D esté detenida: D conserva su instrucción)
+    // (a miss starts the refill even if D is stalled: D keeps its instruction)
     wire        f2_miss  = (fstate == F_RUN) & ~ic_hit & ~redirect_q & ~d_redir;
 
     always @(*) begin
@@ -217,7 +217,7 @@ module rv_core #(
     end
 
     // ========================================================================
-    // D: decodificación
+    // D: decode
     // ========================================================================
     wire [6:0] opD  = irD[6:0];
     wire [2:0] f3D  = irD[14:12];
@@ -275,11 +275,11 @@ module rv_core #(
     wire rs2_used = dBR | dST | dOP;
     wire use_imm  = dOPI | dLUI | dAUI;
     wire d_we     = (dLUI | dAUI | dJAL | dJALR | dLD | dOPI | dOP | dCSR) & (rdD != 5'd0);
-    wire d_late   = dLD | dCSR;                      // resultado disponible al final de M
+    wire d_late   = dLD | dCSR;                      // result available at the end of M
     wire d_sub    = (dOP & f7D[5] & (f3D == 3'b000)) |
                     ((dOP | dOPI) & (f3D == 3'b010 || f3D == 3'b011)) | dBR;
 
-    // banco de registros: dos copias en RAM distribuida (lectura asíncrona)
+    // register file: two copies in distributed RAM (asynchronous read)
     reg  [31:0] rf1 [0:31] /* synthesis syn_ramstyle = "distributed_ram" */;
     reg  [31:0] rf2 [0:31] /* synthesis syn_ramstyle = "distributed_ram" */;
     reg         vW, weW;
@@ -298,7 +298,7 @@ module rv_core #(
     wire [31:0] r2 = (rs2D == 5'd0) ? 32'd0 : (rf_we && rdW == rs2D) ? resW : r2raw;
 
     // ========================================================================
-    // Registros de E y M (declaración)
+    // E and M registers (declaration)
     // ========================================================================
     reg        vE, weE, lateE, ldE, stE, brE, jalrE, linkE, mdE, csrE, subE, sraE;
     reg        excE, irqE, mretE, fenceE, fenciE;
@@ -319,7 +319,7 @@ module rv_core #(
     reg [11:0] csraM;
 
     // ========================================================================
-    // D: interbloqueos y adelantamiento
+    // D: interlocks and forwarding
     // ========================================================================
     wire md_done;
     wire stallE = vE & mdE & ~md_done & ~kill_DE;
@@ -327,10 +327,10 @@ module rv_core #(
     wire loaduse = vE & lateE & weE &
                    ((rs1_used & (rdE == rs1D)) | (rs2_used & (rdE == rs2D)));
     wire st_ld   = vE & stE & dLD;
-    wire st_csr  = ((vE & csrE) | (vM & csrM)) & dCSR;   // CSR tras CSR: el anterior escribe en M
+    wire st_csr  = ((vE & csrE) | (vM & csrM)) & dCSR;   // CSR after CSR: the earlier one writes in M
     assign stallD = stallE | (vD & (loaduse | st_ld | st_csr | mem_hold));
 
-    // interrupción: se inyecta sustituyendo a la instrucción que pasa a E
+    // interrupt: injected by replacing the instruction moving into E
     reg  irq_q;
     wire inject = irq_q & ~io_valid & ~mem_hold;
     wire issue  = vD & ~stallD & ~kill_DE;
@@ -342,7 +342,7 @@ module rv_core #(
     wire nfBM  = rs2_used & ~use_imm & prodE & (rdE == rs2D);
     wire nfBW  = rs2_used & ~use_imm & prodM & (rdM == rs2D) & ~nfBM;
 
-    // RAS: push en llamadas, pop en retornos (al emitir)
+    // RAS: push on calls, pop on returns (at issue)
     wire d_link = (dJAL | dJALR) & (rdD == 5'd1 || rdD == 5'd5);
     wire d_ret  = dJALR & (rs1D == 5'd1 || rs1D == 5'd5) & (rdD == 5'd0);
     wire [31:0] pc4D = pcD + 32'd4;
@@ -350,7 +350,7 @@ module rv_core #(
         if (rst) begin
             ras_sp <= 2'd0;
             ras[0] <= RESET_PC; ras[1] <= RESET_PC; ras[2] <= RESET_PC; ras[3] <= RESET_PC;
-        end else if (vE & ~kill_DE & ~irqE) begin       // se actualiza desde E (registrado)
+        end else if (vE & ~kill_DE & ~irqE) begin       // updated from E (registered)
             if (rpushE) begin
                 ras[ras_sp + 2'd1] <= pc4E;
                 ras_sp <= ras_sp + 2'd1;
@@ -395,7 +395,7 @@ module rv_core #(
                     mretE <= 1'b0; fenceE <= 1'b0; fenciE <= 1'b0;
                     irqE  <= inject;
                     excE  <= ~inject;
-                    causeE <= 4'd2;                     // instrucción ilegal
+                    causeE <= 4'd2;                     // illegal instruction
                 end else begin
                     weE    <= d_we;
                     lateE  <= d_late;
@@ -419,12 +419,12 @@ module rv_core #(
     end
 
     // ========================================================================
-    // E: ejecución
+    // E: execute
     // ========================================================================
-    // Adelantamiento: copias separadas por consumidor (menos carga y rutado)
+    // Forwarding: separate copies per consumer (less load and routing)
     wire [31:0] a  /* synthesis syn_keep=1 */;      // ALU, CSR, mul/div
     wire [31:0] b  /* synthesis syn_keep=1 */;
-    wire [31:0] ac /* synthesis syn_keep=1 */;      // comparación de saltos / JALR
+    wire [31:0] ac /* synthesis syn_keep=1 */;      // branch compare / JALR
     wire [31:0] bc /* synthesis syn_keep=1 */;
     wire [31:0] aa /* synthesis syn_keep=1 */;      // AGU
     assign a  = fAM ? resM : fAW ? resW : opaE;
@@ -436,18 +436,18 @@ module rv_core #(
     // ALU
     wire [32:0] sum33 = {1'b0, a} + {1'b0, b ^ {32{subE}}} + {32'd0, subE};
     wire [31:0] sum   = sum33[31:0];
-    wire        ltu   = ~sum33[32];                    // a - b con préstamo
+    wire        ltu   = ~sum33[32];                    // a - b with borrow
     wire        lt    = (a[31] ^ b[31]) ? a[31] : sum[31];
     wire [31:0] sll   = a << b[4:0];
     wire [31:0] srx   = $signed({sraE & a[31], a}) >>> b[4:0];
 
-    // comparador de saltos propio
+    // dedicated branch comparator
     wire [32:0] cmp33 = {1'b0, ac} - {1'b0, bc};
     wire        c_ltu = cmp33[32];
     wire        c_lt  = (ac[31] ^ bc[31]) ? ac[31] : cmp33[31];
     wire        c_eq  = (ac == bc);
 
-    // resultado: AND-OR con selecciones one-hot registradas
+    // result: AND-OR with registered one-hot selects
     wire [31:0] md_res;
     wire [31:0] xres = linkE ? pc4E : md_res;
     wire [31:0] resE = ({32{s_add}}  & sum) |
@@ -470,7 +470,7 @@ module rv_core #(
         .a(a), .b(b), .done(md_done), .res(md_res)
     );
 
-    // saltos
+    // branches
     reg taken;
     always @(*) begin
         case (f3E)
@@ -485,13 +485,13 @@ module rv_core #(
     wire [31:0] jtgt   = {agu[31:1], 1'b0};
     wire        liveE  = vE & ~kill_DE;
     wire        mis_br = brE & (taken ^ predE);
-    // solo se predicen retornos con imm = 0: basta comparar rs1 con el destino
+    // only returns with imm = 0 are predicted: comparing rs1 with the target is enough
     wire        mis_jr = jalrE & (~predE | (tgtE[31:1] != ac[31:1]));
     wire        mispredict = liveE & (mis_br | mis_jr);
-    // en un fallo de predicción de bifurcación el destino es el contrario al predicho
+    // on a branch misprediction the target is the opposite of the predicted one
     wire [31:0] mis_pc = jalrE ? jtgt : (predE ? pc4E : tgtE);
 
-    // desalineación
+    // misalignment
     wire misal = (f3E[1:0] == 2'b10 && agu[1:0] != 2'b00) ||
                  (f3E[1:0] == 2'b01 && agu[0]);
     wire cacheable = (agu[31:28] == 4'h0) || (agu[31:28] == 4'h4);
@@ -531,10 +531,10 @@ module rv_core #(
     end
 
     // ========================================================================
-    // M: memoria, CSR, excepciones
+    // M: memory, CSR, exceptions
     // ========================================================================
     wire        liveM    = vM & ~flush_q;
-    // el primer load no cacheable que llega a M tras el replay es el que pidió el dato
+    // the first uncacheable load reaching M after the replay is the one that requested the data
     wire        io_match = io_valid & ~cacheM;
     wire        ld_ok    = cacheM ? dc_hit : io_match;
     wire [31:0] lword    = io_match ? io_rdata : dc_rdata;
@@ -555,8 +555,8 @@ module rv_core #(
     reg        mie_meie, mie_mtie, mie_msie;
     reg [31:0] mtvec, mscratch, mepc, mtval;
     reg [31:0] mcause;
-    // contadores de 64 bits en dos mitades con acarreo registrado (la parte alta
-    // se actualiza un ciclo después: leer alta-baja-alta como siempre)
+    // 64-bit counters in two halves with registered carry (the high half
+    // updates one cycle later: read high-low-high as usual)
     reg [31:0] mcyc_l, mcyc_h, mins_l, mins_h;
     reg        mcyc_c, mins_c;
     wire [63:0] mcycle   = {mcyc_h, mcyc_l};
@@ -568,8 +568,8 @@ module rv_core #(
     wire        irq_now = mstatus_mie & ((irq_ext & mie_meie) | (irq_timer & mie_mtie) | (irq_soft & mie_msie));
     wire [3:0]  irq_cause = (irq_ext & mie_meie) ? 4'd11 : (irq_soft & mie_msie) ? 4'd3 : 4'd7;
 
-    // El CSR se lee en E (dirección = immE) y el valor pasa registrado a M.
-    // Dos instrucciones CSR seguidas se separan una burbuja (ver st_csr).
+    // The CSR is read in E (address = immE) and the value is passed registered to M.
+    // Two consecutive CSR instructions are separated by a bubble (see st_csr).
     reg [31:0] csr_r, csr_rq;
     always @(posedge clk) csr_rq <= csr_r;
     always @(*) begin
@@ -590,7 +590,7 @@ module rv_core #(
         default: csr_r = 32'd0;                       // mhartid, mvendorid... = 0
         endcase
     end
-    wire [31:0] csr_src = resM;                       // rs1 o zimm (pasado por E)
+    wire [31:0] csr_src = resM;                       // rs1 or zimm (passed through E)
     reg  [31:0] csr_w;
     always @(*) begin
         case (f3M[1:0])
@@ -599,7 +599,7 @@ module rv_core #(
         default: csr_w = csr_rq & ~csr_src;
         endcase
     end
-    // CSRRS/CSRRC con rs1 = x0 / zimm = 0 no escriben
+    // CSRRS/CSRRC with rs1 = x0 / zimm = 0 do not write
     wire csr_wr_en = (f3M[1:0] == 2'b01) | (csr_src != 32'd0);
 
     wire replay  = liveM & ~excM & ((ldM & ~ld_ok) | (stM & sb_full) | (irqM & ~irq_now));
@@ -635,7 +635,7 @@ module rv_core #(
     assign dc_waddr = addrM;
     assign dc_wdata = st_data;
 
-    // redirección
+    // redirect
     always @(posedge clk) begin
         if (rst) begin
             redirect_q <= 1'b0;
@@ -643,7 +643,7 @@ module rv_core #(
         end else begin
             flush_q    <= flush_n;
             redirect_q <= flush_n | mispredict;
-            flush_pc_q <= flush_pc_n;   // selección temprana (no depende de aciertos)
+            flush_pc_q <= flush_pc_n;   // early select (does not depend on hits)
             mis_pc_q   <= mis_pc;
         end
     end

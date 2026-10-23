@@ -1,8 +1,8 @@
 // ============================================================================
-// tb_opl.v - opl2 dirigido por fichero
-//   +ev=<f>   líneas "<n_muestra> <off_hex> <dato_hex>": escritura antes de
-//             calcular la muestra n (con el motor en reposo)
-//   +n=<N>    muestras a generar ; +out=<f> una muestra (hex 16 bits) por línea
+// tb_opl.v - opl2 driven by a file
+//   +ev=<f>   lines "<sample_n> <off_hex> <data_hex>": write before
+//             computing sample n (with the engine idle)
+//   +n=<N>    samples to generate ; +out=<f> one sample (16-bit hex) per line
 // ============================================================================
 `timescale 1ns/1ps
 module tb_opl;
@@ -58,7 +58,7 @@ module tb_opl;
             $fwrite(fo, "%04h\n", smp);
         end
         $fclose(fo);
-        $display("OPL: %0d muestras, máx %0d ciclos/muestra", n, maxc);
+        $display("OPL: %0d samples, max %0d cycles/sample", n, maxc);
         $finish;
     end
 endmodule

@@ -1,10 +1,10 @@
 // ============================================================================
-// gamepad.v - Lectura automática de 2 mandos SNES (o NES) cada ~1 ms
-//   +0x00 PAD0  R [15:0] botones (1 = pulsado)
-//                 SNES: B Y Select Start Arriba Abajo Izq Der A X L R (bits 0..11)
-//                 NES : A B Select Start Arriba Abajo Izq Der (bits 0..7)
+// gamepad.v - Automatic reading of 2 SNES (or NES) pads every ~1 ms
+//   +0x00 PAD0  R [15:0] buttons (1 = pressed)
+//                 SNES: B Y Select Start Up Down Left Right A X L R (bits 0..11)
+//                 NES : A B Select Start Up Down Left Right (bits 0..7)
 //   +0x04 PAD1  R
-//   +0x08 CNT   R  lecturas completadas
+//   +0x08 CNT   R  completed reads
 // ============================================================================
 `default_nettype none
 module gamepad #(
@@ -44,9 +44,9 @@ module gamepad #(
                 t  <= 16'd0;
                 ph <= ph + 6'd1;
                 if (ph == 6'd2)
-                    pad_latch <= 2'b00;                 // latch alto durante 12 us
+                    pad_latch <= 2'b00;                 // latch high for 12 us
                 else if (ph >= 6'd3) begin
-                    // fases impares: reloj bajo y lectura del bit; pares: reloj alto
+                    // odd phases: clock low and bit read; even: clock high
                     if (ph[0]) begin
                         pad_clk <= 2'b00;
                         s0 <= {~d_s1[0], s0[15:1]};

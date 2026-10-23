@@ -1,5 +1,5 @@
 // ============================================================================
-// cpu.v - Subsistema de CPU: rv_core + icache + dcache + cpu_mem (ROM incluida)
+// cpu.v - CPU subsystem: rv_core + icache + dcache + cpu_mem (ROM included)
 // ============================================================================
 `default_nettype none
 module cpu #(
@@ -20,7 +20,7 @@ module cpu #(
     input  wire        m_wnext,
     input  wire [31:0] m_rdata,
     input  wire        m_rvalid,
-    // E/S
+    // I/O
     output wire        io_req,
     output wire        io_we,
     output wire [31:0] io_a,
@@ -28,7 +28,7 @@ module cpu #(
     output wire [3:0]  io_ws,
     input  wire        io_ack,
     input  wire [31:0] io_rd,
-    // interrupciones
+    // interrupts
     input  wire        irq_ext,
     input  wire        irq_timer,
     input  wire        irq_soft,
@@ -69,8 +69,8 @@ module cpu #(
         .twe(icw_te), .twidx(icw_tidx), .twdata(icw_tdata)
     );
 
-    // la escritura de datos de la dcache viene del store en M o del relleno
-    // (nunca a la vez: durante un relleno D está detenida y M vacía)
+    // dcache data writes come from the store in M or from the refill
+    // (never both: during a refill D is stalled and M is empty)
     dcache #(.IDXW(8)) u_dc (
         .clk(clk), .raddr(dc_addr), .rdata(dc_rdata), .hit(dc_hit),
         .wbe(dcw_de ? 4'b1111 : dc_wbe),

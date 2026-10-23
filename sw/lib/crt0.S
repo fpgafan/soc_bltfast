@@ -1,8 +1,8 @@
-# crt0.S - arranque de los programas (cargados en 0x4000_0000)
+# crt0.S - program startup (loaded at 0x4000_0000)
     .section .text.start
     .globl _start
 _start:
-    li   sp, 0x40600000          # pila bajo los framebuffers
+    li   sp, 0x40600000          # stack below the framebuffers
     la   gp, __global_pointer$
     la   t1, _bss_start
     la   t2, _bss_end
@@ -13,13 +13,13 @@ _start:
 2:  la   t0, trap_entry
     csrw mtvec, t0
     call main
-    li   a0, 0x80000004          # LEDs = 101010: fin (lo usa la simulación)
+    li   a0, 0x80000004          # LEDs = 101010: end (used by the simulation)
     li   a1, 0x2A
     sw   a1, 0(a0)
 3:  j    3b
 
-# Entrada de interrupciones/excepciones: guarda los registros temporales y
-# llama a irq_handler(mcause, mepc) (definible por el programa; débil aquí).
+# Interrupt/exception entry: saves the temporary registers and
+# calls irq_handler(mcause, mepc) (the program may define it; weak here).
     .align 4
 trap_entry:
     addi sp, sp, -64

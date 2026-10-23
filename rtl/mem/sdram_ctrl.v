@@ -1,23 +1,23 @@
 // ============================================================================
-// sdram_ctrl.v - Controlador de la SDRAM embebida del GW2AR-18 (2M x 32)
+// sdram_ctrl.v - Controller for the GW2AR-18 embedded SDRAM (2M x 32)
 //
-//   4 bancos x 2048 filas x 256 columnas, BL = 1 programado; cada transacción
-//   es ACTIVE + 1..16 READ/WRITE consecutivos (misma fila) + PRECHARGE.
-//   Mapeo de la dirección de palabra a[22:2]: columna a[9:2], banco a[11:10],
-//   fila a[22:12] (una ráfaga no debe cruzar un límite de 1 KB).
+//   4 banks x 2048 rows x 256 columns, BL = 1 programmed; each transaction
+//   is ACTIVE + 1..16 consecutive READ/WRITE (same row) + PRECHARGE.
+//   Word address mapping a[22:2]: column a[9:2], bank a[11:10],
+//   row a[22:12] (a burst must not cross a 1 KB boundary).
 //
-//   Maestros (prioridad fija 0 > 1, y turno rotatorio entre 2 y 3):
-//     0 = vídeo, 1 = sonido, 2 = CPU, 3 = motor 2D
-//   Protocolo por maestro:
-//     req/we/addr/len (len = palabras - 1) se mantienen hasta ack (1 ciclo).
-//     Escritura: el controlador toma wdata/wmask del maestro en curso y da
-//       wnext (1 ciclo) por cada palabra; el maestro presenta la siguiente
-//       palabra en el ciclo siguiente.
-//     Lectura: rvalid[i] + rdata, en orden, una por palabra.
+//   Masters (fixed priority 0 > 1, and round robin between 2 and 3):
+//     0 = video, 1 = sound, 2 = CPU, 3 = 2D engine
+//   Per-master protocol:
+//     req/we/addr/len (len = words - 1) are held until ack (1 cycle).
+//     Write: the controller takes wdata/wmask from the current master and
+//       asserts wnext (1 cycle) for each word; the master presents the next
+//       word on the following cycle.
+//     Read: rvalid[i] + rdata, in order, one per word.
 //
-//   rd_lat: ciclos entre el registro de la orden READ y la captura del dato
-//   (programable para calibrar en la placa junto con la fase del reloj).
-//   Todas las salidas hacia la SDRAM están registradas (IOB).
+//   rd_lat: cycles between registering the READ command and capturing the data
+//   (programmable, to calibrate on the board together with the clock phase).
+//   All outputs to the SDRAM are registered (IOB).
 // ============================================================================
 `default_nettype none
 module sdram_ctrl #(
@@ -30,12 +30,12 @@ module sdram_ctrl #(
     parameter T_RFC     = 7,
     parameter T_MRD     = 2,
     parameter INIT_US   = 200,
-    parameter REF_US    = 7             // ~7.8 us por fila
+    parameter REF_US    = 7             // ~7.8 us per row
 )(
     input  wire          clk,
     input  wire          rst,
     input  wire [2:0]    rd_lat,
-    output reg           ready,         // inicialización terminada
+    output reg           ready,         // initialization done
 
     input  wire [3:0]    req,
     input  wire [3:0]    we,
@@ -59,7 +59,7 @@ module sdram_ctrl #(
     output wire [3:0]    sd_dqm,
     inout  wire [31:0]   sd_dq
 );
-    // ------------------------------------------------------------------ órdenes
+    // ------------------------------------------------------------------ commands
     localparam [3:0] C_NOP = 4'b0111, C_ACT = 4'b0011, C_RD = 4'b0101, C_WR = 4'b0100,
                      C_PRE = 4'b0010, C_REF = 4'b0001, C_MRS = 4'b0000;
 
@@ -81,35 +81,35 @@ module sdram_ctrl #(
 
     always @(posedge clk) dqi_q <= sd_dq;
 
-    // ------------------------------------------------------------------ estado
+    // ------------------------------------------------------------------ state
     localparam INIT_CYC = INIT_US * CLK_MHZ;
     localparam REF_CYC  = REF_US * CLK_MHZ;
 
     localparam S_INIT = 3'd0, S_IDLE = 3'd1, S_ACTW = 3'd2, S_RW = 3'd3,
                S_PREW = 3'd4, S_WAIT = 3'd5;
     reg [2:0]  st;
-    reg [15:0] icnt;                    // contador de inicialización
+    reg [15:0] icnt;                    // initialization counter
     reg [3:0]  istep;
-    reg [3:0]  wcnt;                    // espera genérica
-    reg [15:0] rcnt;                    // intervalo de refresco
+    reg [3:0]  wcnt;                    // generic wait
+    reg [15:0] rcnt;                    // refresh interval
     reg        ref_pend;
 
-    reg [1:0]  cur;                     // maestro en curso
+    reg [1:0]  cur;                     // current master
     reg        cur_we;
     reg [1:0]  cur_ba;
     reg [10:0] cur_row;
     reg [7:0]  cur_col;
-    reg [3:0]  cur_left;                // palabras que faltan - 1
-    reg [3:0]  ras_cnt;                 // ciclos desde ACTIVE
-    reg [3:0]  rp_cnt;                  // ciclos que faltan para otro ACTIVE/REF
-    reg [3:0]  wr_cnt;                  // ciclos desde el último WRITE
-    reg        rr;                      // turno 2/3
+    reg [3:0]  cur_left;                // remaining words - 1
+    reg [3:0]  ras_cnt;                 // cycles since ACTIVE
+    reg [3:0]  rp_cnt;                  // cycles left before another ACTIVE/REF
+    reg [3:0]  wr_cnt;                  // cycles since the last WRITE
+    reg        rr;                      // 2/3 turn
 
-    // tubería de lectura: {válido, maestro} por ciclo
+    // read pipeline: {valid, master} per cycle
     reg [2:0]  rpipe [0:7];
     integer    k;
 
-    // selección de maestro
+    // master selection
     reg        g_any;
     reg [1:0]  g_id;
     always @(*) begin
@@ -123,7 +123,7 @@ module sdram_ctrl #(
     wire [20:0] g_addr = addr[g_id*21 +: 21];
 
     wire [31:0] cur_wdata = wdata[cur*32 +: 32];
-    // wnext es combinacional: el maestro pasa a la palabra siguiente en este flanco
+    // wnext is combinational: the master moves to the next word on this edge
     assign wnext = (st == S_RW && cur_we) ? (4'b0001 << cur) : 4'b0000;
     wire [3:0]  cur_wmask = wmask[cur*4 +: 4];
 
@@ -133,7 +133,7 @@ module sdram_ctrl #(
         dqoe_q <= 1'b0;
         dqm_q  <= 4'b0000;
 
-        // tubería de lectura (siempre corre)
+        // read pipeline (always running)
         for (k = 7; k > 0; k = k - 1) rpipe[k] <= rpipe[k-1];
         rpipe[0] <= 3'b000;
         rvalid <= 4'd0;
@@ -182,7 +182,7 @@ module sdram_ctrl #(
                         rp_cnt <= T_RFC[3:0];
                         istep <= istep + 4'd1;
                     end
-                    4'd9: begin                       // MODE REGISTER: BL=1, secuencial, CL
+                    4'd9: begin                       // MODE REGISTER: BL=1, sequential, CL
                         cmd_q <= C_MRS; ba_q <= 2'b00;
                         a_q <= {4'b0000, CL[2:0], 4'b0000};
                         rp_cnt <= T_MRD[3:0];
@@ -196,7 +196,7 @@ module sdram_ctrl #(
                     endcase
                 end
             end
-            // ---------------------------------------------------------- reposo
+            // ---------------------------------------------------------- idle
             S_IDLE: begin
                 if (rp_cnt == 4'd0) begin
                     if (ref_pend) begin
@@ -225,7 +225,7 @@ module sdram_ctrl #(
                 if (wcnt == 4'd1) st <= S_RW;
                 wcnt <= wcnt - 4'd1;
             end
-            // ---------------------------------------------------------- lectura / escritura
+            // ---------------------------------------------------------- read / write
             S_RW: begin
                 ba_q <= cur_ba;
                 a_q  <= {3'b000, cur_col};
@@ -244,7 +244,7 @@ module sdram_ctrl #(
                 if (cur_left == 4'd0) st <= S_PREW;
             end
             S_PREW: begin
-                // PRECHARGE cuando se cumplen tRAS y tWR (escritura)
+                // PRECHARGE once tRAS and tWR (write) are met
                 if (ras_cnt >= T_RAS[3:0] && (!cur_we || wr_cnt >= T_WR[3:0])) begin
                     cmd_q  <= C_PRE;
                     ba_q   <= cur_ba;

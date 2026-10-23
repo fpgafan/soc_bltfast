@@ -1,25 +1,25 @@
 // ============================================================================
-// soc_top.v - SoC "bltfast" para Sipeed Tang Nano 20K (GW2AR-LV18QN88C8/I7)
+// soc_top.v - "bltfast" SoC for the Sipeed Tang Nano 20K (GW2AR-LV18QN88C8/I7)
 //
-//   CPU    : RV32IM_Zicsr, 6 etapas, icache 8 KB + dcache 8 KB, 90 MHz
-//   RAM    : SDRAM embebida 8 MB (4 maestros: vídeo > sonido > CPU <-> 2D)
-//   Vídeo  : 640x480@60 8 bpp con paleta, scroll por hardware, HDMI con audio
-//   2D     : blitter con cola de comandos (relleno, copia escalada/espejo,
-//            transparencia, 1 bpp, líneas)
-//   Sonido : 32 voces wavetable/PCM por DMA, ADSR, 48 kHz (HDMI + I2S)
-//   E/S    : UART, SD (SPI), 2 mandos SNES/NES, teclado PS/2, LEDs, botones
+//   CPU    : RV32IM_Zicsr, 6 stages, 8 KB icache + 8 KB dcache, 90 MHz
+//   RAM    : 8 MB embedded SDRAM (4 masters: video > sound > CPU <-> 2D)
+//   Video  : 640x480@60 8 bpp with palette, hardware scrolling, HDMI with audio
+//   2D     : blitter with command queue (fill, scaled/mirrored copy,
+//            transparency, 1 bpp, lines)
+//   Sound  : 32 wavetable/PCM voices via DMA, ADSR, 48 kHz (HDMI + I2S)
+//   I/O    : UART, SD (SPI), 2 SNES/NES pads, PS/2 keyboard, LEDs, buttons
 //
-//   Mapa de memoria:
-//     0x0000_0000  ROM de arranque (8 KB, cacheable)
-//     0x1000_0000  RAM interna (4 KB, sin caché: pila del cargador)
-//     0x4000_0000  SDRAM 8 MB (cacheable)     0x5000_0000  alias sin caché
-//     0x8000_0000  sysctl        0x8000_1000  UART        0x8000_2000  vídeo
-//     0x8000_3000  paleta        0x8000_4000  blitter     0x8000_5000  sonido
-//     0x8000_6000  SD            0x8000_7000  mandos      0x8000_8000  PS/2
+//   Memory map:
+//     0x0000_0000  boot ROM (8 KB, cacheable)
+//     0x1000_0000  internal RAM (4 KB, uncached: loader stack)
+//     0x4000_0000  SDRAM 8 MB (cacheable)     0x5000_0000  uncached alias
+//     0x8000_0000  sysctl        0x8000_1000  UART        0x8000_2000  video
+//     0x8000_3000  palette       0x8000_4000  blitter     0x8000_5000  sound
+//     0x8000_6000  SD            0x8000_7000  pads        0x8000_8000  PS/2
 //     0x8000_9000  FM (OPL2)
-//   Interrupciones externas (sysctl IRQ_PEND/IRQ_EN):
-//     0 UART RX (nivel), 1 VBLANK, 2 RASTER, 3 blitter (flanco), 4 sonido,
-//     5 PS/2 (nivel)
+//   External interrupts (sysctl IRQ_PEND/IRQ_EN):
+//     0 UART RX (level), 1 VBLANK, 2 RASTER, 3 blitter (edge), 4 sound,
+//     5 PS/2 (level)
 // ============================================================================
 `default_nettype none
 module soc_top #(
@@ -34,24 +34,24 @@ module soc_top #(
     // HDMI
     output wire        tmds_clk_p, tmds_clk_n,
     output wire [2:0]  tmds_d_p,   tmds_d_n,
-    // audio de la placa (I2S + amplificador)
+    // on-board audio (I2S + amplifier)
     output wire        i2s_bclk,
     output wire        i2s_lrck,
     output wire        i2s_data,
     output wire        pa_en,
-    // tarjeta SD (SPI)
+    // SD card (SPI)
     output wire        sd_clk,
     output wire        sd_cmd,
     input  wire        sd_dat0,
     output wire        sd_dat3,
-    // mandos SNES/NES
+    // SNES/NES pads
     output wire [1:0]  pad_latch,
     output wire [1:0]  pad_clk,
     input  wire [1:0]  pad_data,
-    // teclado PS/2
+    // PS/2 keyboard
     input  wire        ps2_clk,
     input  wire        ps2_data,
-    // SDRAM embebida (nombres obligatorios para que Gowin la enlace)
+    // embedded SDRAM (names required for Gowin to bind it)
     output wire        O_sdram_clk,
     output wire        O_sdram_cke,
     output wire        O_sdram_cs_n,
@@ -63,7 +63,7 @@ module soc_top #(
     output wire [1:0]  O_sdram_ba,
     inout  wire [31:0] IO_sdram_dq
 );
-    // ------------------------------------------------------------------ relojes
+    // ------------------------------------------------------------------ clocks
     wire clk, clk_sd, clk_ser, clk_pix, locked;
     wire [3:0] sd_phase;
     clocks u_clk (
@@ -134,9 +134,9 @@ module soc_top #(
         .instret(instret)
     );
 
-    // ------------------------------------------------------------------ bus de E/S
-    // La petición de la CPU se registra una vez (r_*) antes de decodificarla:
-    // así ningún periférico ve la lógica de la unidad de memoria en su camino.
+    // ------------------------------------------------------------------ I/O bus
+    // The CPU request is registered once (r_*) before decoding it:
+    // that way no peripheral sees the memory unit logic in its path.
     reg         r_req, r_we;
     reg  [31:0] r_a, r_wd;
     reg  [3:0]  r_ws;
@@ -144,7 +144,7 @@ module soc_top #(
         r_req <= io_req & ~rst;
         if (io_req) begin r_we <= io_we; r_a <= io_a; r_wd <= io_wd; r_ws <= io_ws; end
     end
-    // RAM interna de 4 KB (0x1000_0000), un carril por byte
+    // 4 KB internal RAM (0x1000_0000), one lane per byte
     wire s_bram = r_req & (r_a[31:28] == 4'h1);
     reg  [7:0] br0 [0:1023], br1 [0:1023], br2 [0:1023], br3 [0:1023];
     reg  [31:0] rd_bram;
@@ -171,7 +171,7 @@ module soc_top #(
     reg        ack_q;
     wire       blt_ack;
     always @(posedge clk) begin
-        ack_q <= r_req & ~s_blt;                     // el blitter da su propio ack
+        ack_q <= r_req & ~s_blt;                     // the blitter drives its own ack
         if (r_req) rsel <= io_dev ? dsel : (r_a[31:28] == 4'h1) ? 4'hE : 4'hF;
     end
     assign io_ack = ack_q | blt_ack;
@@ -192,7 +192,7 @@ module soc_top #(
         endcase
     end
 
-    // ------------------------------------------------------------------ sistema
+    // ------------------------------------------------------------------ system
     wire        uart_irq, vbl_irq, ras_irq, blt_irq, aud_irq, ps2_irq;
     wire [5:0]  led;
     sysctl #(.CLK_HZ(CLK_HZ)) u_sys (
@@ -212,7 +212,7 @@ module soc_top #(
         .rxd(uart_rx), .txd(uart_tx)
     );
 
-    // ------------------------------------------------------------------ vídeo
+    // ------------------------------------------------------------------ video
     wire [23:0] rgb;
     wire        de, hsync, vsync, hdmi_mode;
     wire [9:0]  hc, vc;
@@ -235,8 +235,8 @@ module soc_top #(
         .m_rdata(sd_rdata), .m_rvalid(sd_rvalid[3])
     );
 
-    // ------------------------------------------------------------------ sonido
-    // tick de 48 kHz exactos: 25,2 MHz / 525 (dominio pix) -> sys
+    // ------------------------------------------------------------------ sound
+    // exact 48 kHz tick: 25.2 MHz / 525 (pix domain) -> sys
     reg [9:0] t48 = 10'd0;
     reg       t48_tgl = 1'b0;
     always @(posedge clk_pix) begin
@@ -247,7 +247,7 @@ module soc_top #(
     always @(posedge clk) t48_s <= {t48_s[1:0], t48_tgl};
     wire tick48 = t48_s[2] ^ t48_s[1];
 
-    // FM OPL2: una muestra cada CLK_HZ / 49716 ciclos (la frecuencia del chip)
+    // FM OPL2: one sample every CLK_HZ / 49716 cycles (the chip's rate)
     localparam OPL_DIV = (CLK_HZ + 24858) / 49716;
     reg [11:0] opl_cnt = 12'd0;
     reg        opl_tick = 1'b0;
@@ -271,7 +271,7 @@ module soc_top #(
         .out_valid(aud_ov), .out_l(aud_l), .out_r(aud_r)
     );
 
-    // muestra -> dominio pix (dato estable durante ~20 us)
+    // sample -> pix domain (data stable for ~20 us)
     reg [31:0] smp_h;
     reg        smp_tgl = 1'b0;
     always @(posedge clk) if (aud_ov) begin smp_h <= {aud_r, aud_l}; smp_tgl <= ~smp_tgl; end
@@ -297,7 +297,7 @@ module soc_top #(
         .bclk(i2s_bclk), .lrck(i2s_lrck), .sdata(i2s_data)
     );
 
-    // ------------------------------------------------------------------ SD, mandos, PS/2
+    // ------------------------------------------------------------------ SD, pads, PS/2
     wire sd_cs_n;
     sdspi u_sdc (
         .clk(clk), .rst(rst), .sel(s_sd), .we(r_we), .a(r_a[9:0]), .wd(r_wd), .rd(rd_sd),

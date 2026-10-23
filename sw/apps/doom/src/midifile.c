@@ -15,7 +15,7 @@
 //    Reading of MIDI files.
 //
 
-#ifndef BLTFAST   // en bltfast: midi_stream.c (lee los eventos sobre la marcha)
+#ifndef BLTFAST   // on bltfast: midi_stream.c (reads the events on the fly)
 
 #include <stdio.h>
 #include <stdlib.h>

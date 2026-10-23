@@ -321,7 +321,7 @@ void I_UpdateNoBlit (void)
 void I_FinishUpdate (void)
 {
 #ifdef BLTFAST
-    DG_DrawFrame();     // el blitter escala I_VideoBuffer a la pantalla
+    DG_DrawFrame();     // the blitter scales I_VideoBuffer to the screen
     return;
 #endif
     int y;

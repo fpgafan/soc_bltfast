@@ -1,11 +1,11 @@
-# Arranque de la ROM: pila y datos en la RAM interna (0x1000_0000, 4 KB),
-# porque la SDRAM todavía no está calibrada.
+# ROM startup: stack and data in the internal RAM (0x1000_0000, 4 KB),
+# because the SDRAM is not calibrated yet.
     .section .text.start
     .globl _start
 _start:
     li   sp, 0x10001000
     la   gp, __global_pointer$
-    # .data: copiar de la ROM a la RAM interna
+    # .data: copy from the ROM to the internal RAM
     la   t0, _data_lma
     la   t1, _data_start
     la   t2, _data_end
@@ -26,14 +26,14 @@ _start:
     call main
 5:  j    5b
 
-# cualquier excepción en la ROM: informar por la UART y reiniciar el bucle
+# any exception in the ROM: report over the UART and restart the loop
 trap:
     csrr a0, mcause
     csrr a1, mepc
     call boot_trap
 6:  j    6b
 
-# salto a un programa cargado: a0 = dirección
+# jump to a loaded program: a0 = address
     .globl boot_jump
 boot_jump:
     fence

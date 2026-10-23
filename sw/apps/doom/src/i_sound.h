@@ -249,7 +249,7 @@ extern music_module_t music_opl_module;
 extern int opl_io_port;
 
 #ifdef BLTFAST
-// DMX version to emulate for OPL emulation (de Chocolate Doom):
+// DMX version to emulate for OPL emulation (from Chocolate Doom):
 typedef enum {
     opl_doom1_1_666,    // Doom 1 v1.666
     opl_doom2_1_666,    // Doom 2 v1.666, Hexen, Heretic

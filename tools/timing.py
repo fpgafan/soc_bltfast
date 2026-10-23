@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""timing.py - resumen del timing de Gowin: Fmax y los N peores caminos (setup).
-   uso: python tools/timing.py [N] [-v]"""
+"""timing.py - Gowin timing summary: Fmax and the N worst (setup) paths.
+   usage: python tools/timing.py [N] [-v]"""
 import re, html, sys, os
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 pnr = os.path.join(root, "impl", "pnr")

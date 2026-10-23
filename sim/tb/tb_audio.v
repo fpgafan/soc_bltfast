@@ -1,8 +1,8 @@
 // ============================================================================
-// tb_audio.v - audio + sdram_ctrl + modelo de SDRAM, dirigido por fichero
-//   +ev=<f>   líneas "<n_muestra> <off_hex> <dato_hex>": escritura de registro
-//             antes de calcular la muestra n (con el motor en reposo)
-//   +n=<N>    muestras a generar ; +out=<f> salida {R,L} por muestra
+// tb_audio.v - audio + sdram_ctrl + SDRAM model, driven by a file
+//   +ev=<f>   lines "<sample_n> <off_hex> <data_hex>": register write
+//             before computing sample n (with the engine idle)
+//   +n=<N>    samples to generate ; +out=<f> {R,L} output per sample
 // ============================================================================
 `timescale 1ns/1ps
 module tb_audio;
@@ -30,7 +30,7 @@ module tb_audio;
         .m_rdata(rdata), .m_rvalid(m_rvalid), .out_valid(ov), .out_l(ol), .out_r(orr)
     );
 
-    // tráfico competidor opcional en el maestro 0 (vídeo)
+    // optional competing traffic on master 0 (video)
     reg v_req = 0; reg [22:2] v_addr = 0; reg vid_on = 0; integer vcnt = 0;
     wire [3:0] ack4, wnext4, rvalid4;
     always @(posedge clk) begin
@@ -97,10 +97,10 @@ module tb_audio;
             if (($time - c0) / 10 > maxc) maxc = ($time - c0) / 10;
             @(negedge clk);
             $fwrite(fo, "%04h%04h\n", orr, ol);
-            if (($time - c0) / 10 > 2060) $display("AVISO: muestra %0d tardó %0d ciclos", k, ($time - c0) / 10);
+            if (($time - c0) / 10 > 2060) $display("WARNING: sample %0d took %0d cycles", k, ($time - c0) / 10);
         end
         $fclose(fo);
-        $display("AUDIO: %0d muestras, máx %0d ciclos/muestra, errores SDRAM=%0d", n, maxc, u_mem.errors);
+        $display("AUDIO: %0d samples, max %0d cycles/sample, SDRAM errors=%0d", n, maxc, u_mem.errors);
         $finish;
     end
 endmodule

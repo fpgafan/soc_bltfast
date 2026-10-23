@@ -1,10 +1,10 @@
 // ============================================================================
-// midi.c - Reproductor de MIDI estándar (SMF tipo 0/1) sobre las voces por
-// hardware. Instrumentos generados al arrancar:
-//   - 4 formas de onda (seno, triángulo, sierra, cuadrada) de 256 muestras por
-//     ciclo, en 6 versiones de banda limitada (una por octava) sin aliasing
-//   - percusión sintetizada: bombo, caja, charles y platillo (canal 10)
-// Cada programa General MIDI se asigna por familias a una onda + ADSR.
+// midi.c - Standard MIDI (SMF type 0/1) player on the hardware
+// voices. Instruments generated at startup:
+//   - 4 waveforms (sine, triangle, saw, square) of 256 samples per
+//     cycle, in 6 band-limited versions (one per octave) without aliasing
+//   - synthesized percussion: kick, snare, hi-hat and cymbal (channel 10)
+// Each General MIDI program is mapped by family to a waveform + ADSR.
 // ============================================================================
 #include "audio.h"
 #include "lib.h"
@@ -18,7 +18,7 @@ static sample_t wave[NWAVE][NLEVEL];
 static sample_t drum_kick, drum_snare, drum_hat, drum_crash, drum_ride, drum_tom;
 static int      inst_ready;
 
-// seno en punto fijo (tabla de un cuarto de onda, 64 entradas, Q15)
+// fixed-point sine (quarter-wave table, 64 entries, Q15)
 static const int16_t qsin[65] = {
     0, 804, 1608, 2410, 3212, 4011, 4808, 5602, 6393, 7179, 7962, 8739, 9512, 10278, 11039,
     11793, 12539, 13279, 14010, 14732, 15446, 16151, 16846, 17530, 18204, 18868, 19519, 20159,
@@ -26,7 +26,7 @@ static const int16_t qsin[65] = {
     27683, 28105, 28510, 28898, 29268, 29621, 29956, 30273, 30571, 30852, 31113, 31356, 31580,
     31785, 31971, 32137, 32285, 32412, 32521, 32609, 32678, 32728, 32757, 32767 };
 
-static int32_t isin(uint32_t ph)            // ph: 0..255 = un ciclo -> Q15
+static int32_t isin(uint32_t ph)            // ph: 0..255 = one cycle -> Q15
 {
     ph &= 255;
     uint32_t q = ph & 63;
@@ -45,7 +45,7 @@ static void make_waves(void)
 {
     for (int w = 0; w < W_DIST; w++)
         for (int lv = 0; lv < NLEVEL; lv++) {
-            // armónicos permitidos: la tabla 'lv' se usa hasta ~ 130 Hz * 2^lv
+            // allowed harmonics: table 'lv' is used up to ~ 130 Hz * 2^lv
             int hmax = 160 >> lv;
             if (hmax < 1) hmax = 1;
             int16_t *t = (int16_t *)snd_alloc(WLEN * 2);
@@ -71,15 +71,15 @@ static void make_waves(void)
         }
 }
 
-// guitarra saturada: sierra con recorte suave (como un amplificador) y, para
-// que no haya aliasing, se vuelve a construir con banda limitada por octava a
-// partir de sus armónicos (DFT de un ciclo de WLEN muestras)
+// overdriven guitar: saw with soft clipping (like an amplifier) and, to
+// avoid aliasing, it is rebuilt band-limited per octave from
+// its harmonics (DFT of one cycle of WLEN samples)
 #define DHARM 100
 static void make_dist(int w, int drive)
 {
     static int32_t cyc[WLEN];
     static int64_t ca[DHARM + 1], cb[DHARM + 1];
-    // sierra rica (64 armónicos)
+    // rich saw (64 harmonics)
     int32_t peak = 1;
     for (int i = 0; i < WLEN; i++) {
         int32_t v = 0;
@@ -88,7 +88,7 @@ static void make_dist(int w, int drive)
         if (v > peak) peak = v;
         if (-v > peak) peak = -v;
     }
-    // ganancia + recorte suave: y = x (27 + x^2) / (27 + 9 x^2) (aprox. de tanh), x en Q12
+    // gain + soft clipping: y = x (27 + x^2) / (27 + 9 x^2) (tanh approx.), x in Q12
     for (int i = 0; i < WLEN; i++) {
         int64_t x = (int64_t)cyc[i] * drive * 4096 / peak;
         if (x > 3 * 4096) x = 3 * 4096;
@@ -96,7 +96,7 @@ static void make_dist(int w, int drive)
         int64_t x2 = x * x >> 12;
         cyc[i] = (int32_t)((x * (27 * 4096 + x2) / (27 * 4096 + 9 * x2)) * 32767 >> 12);
     }
-    // armónicos del ciclo saturado
+    // harmonics of the saturated cycle
     for (int h = 1; h <= DHARM; h++) {
         int64_t a = 0, b = 0;
         for (int i = 0; i < WLEN; i++) {
@@ -127,23 +127,23 @@ static void make_dist(int w, int drive)
 
 static void make_drums(void)
 {
-    // bombo: seno con caída rápida de 160 a 45 Hz, clic de ataque y algo de
-    // saturación, 0,35 s
+    // kick: sine with a fast drop from 160 to 45 Hz, attack click and some
+    // saturation, 0.35 s
     int n = 16800;
     int16_t *k = (int16_t *)snd_alloc(n * 2);
     uint32_t ph = 0;
     for (int i = 0; i < n; i++) {
-        uint32_t f = 45 + (uint32_t)(115 * 2400 / (i + 2400));   // caída casi exponencial
+        uint32_t f = 45 + (uint32_t)(115 * 2400 / (i + 2400));   // almost exponential drop
         ph += f * 256 * 65536 / 48000;
         int32_t env = 32767 - (int32_t)((int64_t)i * 32767 / n);
-        int32_t v = (isin(ph >> 16) * 3) >> 1;                     // x1,5 y recorte
+        int32_t v = (isin(ph >> 16) * 3) >> 1;                     // x1.5 and clipping
         if (v > 32767) v = 32767;
         if (v < -32767) v = -32767;
-        if (i < 240) v += (noise() * (240 - i)) / 480;            // clic (5 ms)
+        if (i < 240) v += (noise() * (240 - i)) / 480;            // click (5 ms)
         k[i] = (int16_t)((v * env) >> 15);
     }
     drum_kick = (sample_t){ (uint32_t)k, (uint32_t)n, (uint32_t)n, AUD_FMT_S16, 48000 };
-    // caja: ruido + tono de 190 Hz, 0,2 s
+    // snare: noise + 190 Hz tone, 0.2 s
     n = 9600;
     int16_t *s = (int16_t *)snd_alloc(n * 2);
     ph = 0;
@@ -154,7 +154,7 @@ static void make_drums(void)
         s[i] = (int16_t)((((noise() * 3) >> 2) + (isin(ph >> 16) >> 2)) * env >> 15);
     }
     drum_snare = (sample_t){ (uint32_t)s, (uint32_t)n, (uint32_t)n, AUD_FMT_S16, 48000 };
-    // charles: ruido agudo (diferencias), 0,08 s ; platillo: 1 s
+    // hi-hat: high noise (differences), 0.08 s ; cymbal: 1 s
     for (int c = 0; c < 2; c++) {
         n = c ? 48000 : 4000;
         int16_t *h = (int16_t *)snd_alloc(n * 2);
@@ -169,7 +169,7 @@ static void make_drums(void)
         if (c) drum_crash = (sample_t){ (uint32_t)h, (uint32_t)n, (uint32_t)n, AUD_FMT_S16, 48000 };
         else   drum_hat   = (sample_t){ (uint32_t)h, (uint32_t)n, (uint32_t)n, AUD_FMT_S16, 48000 };
     }
-    // ride: parciales metálicos inarmónicos + ruido agudo, 0,6 s
+    // ride: inharmonic metallic partials + high noise, 0.6 s
     n = 28800;
     int16_t *r = (int16_t *)snd_alloc(n * 2);
     static const uint16_t rf[4] = { 2810, 3560, 4870, 6230 };   // Hz
@@ -189,7 +189,7 @@ static void make_drums(void)
         r[i] = (int16_t)(v * env >> 15);
     }
     drum_ride = (sample_t){ (uint32_t)r, (uint32_t)n, (uint32_t)n, AUD_FMT_S16, 48000 };
-    // tom: seno de 140 a 90 Hz, 0,3 s (se afina según la nota)
+    // tom: sine from 140 to 90 Hz, 0.3 s (tuned according to the note)
     n = 14400;
     int16_t *tm = (int16_t *)snd_alloc(n * 2);
     ph = 0;
@@ -207,65 +207,65 @@ static void inst_init(void)
 {
     if (inst_ready) return;
     make_waves();
-    make_dist(W_DIST, 7);                // distorsión: mucha ganancia
-    make_dist(W_OVER, 3);                // overdrive: saturación suave
+    make_dist(W_DIST, 7);                // distortion: lots of gain
+    make_dist(W_OVER, 3);                // overdrive: soft saturation
     make_drums();
     fence();
     inst_ready = 1;
 }
 
-// ---------------------------------------------------------------- notas -> tono
-// incremento 16.16 para una tabla de WLEN muestras por ciclo:
+// ---------------------------------------------------------------- notes -> pitch
+// 16.16 increment for a table of WLEN samples per cycle:
 // f * WLEN / 48000 * 65536 = f * 349.525...
-static const uint32_t semi[12] = {            // 2^(i/12) en Q16
+static const uint32_t semi[12] = {            // 2^(i/12) in Q16
     65536, 69433, 73562, 77936, 82570, 87480, 92682, 98193, 104032, 110218, 116772, 123715 };
-static uint32_t note_pitch(int note, int bend)  // bend en centésimas de semitono (-200..200)
+static uint32_t note_pitch(int note, int bend)  // bend in cents (-200..200)
 {
-    // C-1 (nota 0) = 8.1758 Hz -> incremento = 8.1758 * 349.525 = 2857.6 (16.16)
+    // C-1 (note 0) = 8.1758 Hz -> increment = 8.1758 * 349.525 = 2857.6 (16.16)
     int n = note * 100 + bend;
     if (n < 0) n = 0;
     int oct = n / 1200, rem = n % 1200;
-    // fracción de semitono: interpolación lineal entre semitonos
+    // semitone fraction: linear interpolation between semitones
     uint64_t p;
     uint32_t nx = (rem / 100 == 11) ? 131072 : semi[rem / 100 + 1];
     p = (uint64_t)2858 * (semi[rem / 100] + (uint64_t)(nx - semi[rem / 100]) * (rem % 100) / 100);
     return (uint32_t)((p << oct) >> 16);
 }
 
-// ---------------------------------------------------------------- instrumentos GM
-typedef struct { uint8_t wave; uint32_t adsr; int8_t oct; uint8_t gain, layer; } inst_t;   // gain/16; layer: 2a voz desafinada
+// ---------------------------------------------------------------- GM instruments
+typedef struct { uint8_t wave; uint32_t adsr; int8_t oct; uint8_t gain, layer; } inst_t;   // gain/16; layer: detuned 2nd voice
 static const inst_t family[16] = {
     { W_TRI,  ADSR(0xF0, 0x4C, 0x40, 0x6C), 0, 16, 0 },   // pianos
-    { W_SINE, ADSR(0xF0, 0x5A, 0x00, 0x6A), 0, 16, 0 },   // percusión cromática
-    { W_SQR,  ADSR(0xA0, 0x40, 0xC0, 0x7C), 0, 16, 0 },   // órganos
-    { W_SAW,  ADSR(0xF0, 0x50, 0x30, 0x6A), 0, 16, 0 },   // guitarras
-    { W_SAW,  ADSR(0xE0, 0x4A, 0x80, 0x7A), 0, 16, 0 },   // bajos
-    { W_SAW,  ADSR(0x6C, 0x30, 0xD0, 0x5C), 0, 16, 0 },   // cuerdas
-    { W_SAW,  ADSR(0x6A, 0x30, 0xC0, 0x5A), 0, 16, 0 },   // conjuntos
-    { W_SQR,  ADSR(0x8C, 0x40, 0xB0, 0x6C), 0, 16, 0 },   // metales
-    { W_SQR,  ADSR(0x8A, 0x40, 0xB0, 0x6C), 0, 16, 0 },   // lengüeta
-    { W_SINE, ADSR(0x8A, 0x40, 0xC0, 0x6C), 0, 16, 0 },   // flautas
-    { W_SAW,  ADSR(0xD0, 0x40, 0xB0, 0x6A), 0, 16, 0 },   // solista sintético
+    { W_SINE, ADSR(0xF0, 0x5A, 0x00, 0x6A), 0, 16, 0 },   // chromatic percussion
+    { W_SQR,  ADSR(0xA0, 0x40, 0xC0, 0x7C), 0, 16, 0 },   // organs
+    { W_SAW,  ADSR(0xF0, 0x50, 0x30, 0x6A), 0, 16, 0 },   // guitars
+    { W_SAW,  ADSR(0xE0, 0x4A, 0x80, 0x7A), 0, 16, 0 },   // basses
+    { W_SAW,  ADSR(0x6C, 0x30, 0xD0, 0x5C), 0, 16, 0 },   // strings
+    { W_SAW,  ADSR(0x6A, 0x30, 0xC0, 0x5A), 0, 16, 0 },   // ensembles
+    { W_SQR,  ADSR(0x8C, 0x40, 0xB0, 0x6C), 0, 16, 0 },   // brass
+    { W_SQR,  ADSR(0x8A, 0x40, 0xB0, 0x6C), 0, 16, 0 },   // reed
+    { W_SINE, ADSR(0x8A, 0x40, 0xC0, 0x6C), 0, 16, 0 },   // pipes
+    { W_SAW,  ADSR(0xD0, 0x40, 0xB0, 0x6A), 0, 16, 0 },   // synth lead
     { W_TRI,  ADSR(0x50, 0x30, 0xC0, 0x4A), 0, 16, 0 },   // pads
-    { W_SQR,  ADSR(0x80, 0x40, 0x80, 0x5A), 0, 16, 0 },   // efectos sintéticos
-    { W_SAW,  ADSR(0xF0, 0x58, 0x20, 0x6A), 0, 16, 0 },   // étnicos
-    { W_SINE, ADSR(0xF0, 0x60, 0x00, 0x7A), 0, 16, 0 },   // percusivos
-    { W_TRI,  ADSR(0xF0, 0x50, 0x40, 0x6A), 0, 16, 0 },   // efectos
+    { W_SQR,  ADSR(0x80, 0x40, 0x80, 0x5A), 0, 16, 0 },   // synth effects
+    { W_SAW,  ADSR(0xF0, 0x58, 0x20, 0x6A), 0, 16, 0 },   // ethnic
+    { W_SINE, ADSR(0xF0, 0x60, 0x00, 0x7A), 0, 16, 0 },   // percussive
+    { W_TRI,  ADSR(0xF0, 0x50, 0x40, 0x6A), 0, 16, 0 },   // sound effects
 };
 
-// instrumentos concretos (los que más usa la música de Doom); el resto, por familia
+// specific instruments (the ones Doom's music uses most); the rest, by family
 static inst_t prog_inst(int p)
 {
     switch (p) {
-    case 29: return (inst_t){ W_OVER, ADSR(0xE0, 0x46, 0xC0, 0x88), 0, 16, 1 };   // guitarra overdrive
-    case 30: return (inst_t){ W_DIST, ADSR(0xE0, 0x44, 0xD0, 0x88), 0, 16, 1 };   // guitarra distorsionada
-    case 32: case 33: case 34: case 35:                                           // bajos eléctricos
+    case 29: return (inst_t){ W_OVER, ADSR(0xE0, 0x46, 0xC0, 0x88), 0, 16, 1 };   // overdriven guitar
+    case 30: return (inst_t){ W_DIST, ADSR(0xE0, 0x44, 0xD0, 0x88), 0, 16, 1 };   // distortion guitar
+    case 32: case 33: case 34: case 35:                                           // electric basses
              return (inst_t){ W_OVER, ADSR(0xF0, 0x50, 0xA8, 0x88), 0, 20, 0 };
-    case 36: case 37: case 38: case 39:                                           // bajos slap / sintéticos
+    case 36: case 37: case 38: case 39:                                           // slap / synth basses
              return (inst_t){ W_SQR,  ADSR(0xF0, 0x52, 0xA0, 0x88), 0, 18, 0 };
-    case 80: return (inst_t){ W_SQR,  ADSR(0xE0, 0x40, 0xC0, 0x70), 0, 16, 1 };   // solista cuadrada
-    case 81: return (inst_t){ W_SAW,  ADSR(0xE0, 0x40, 0xC0, 0x70), 0, 16, 1 };   // solista sierra
-    case 87: return (inst_t){ W_DIST, ADSR(0xE0, 0x44, 0xC0, 0x80), 0, 16, 0 };   // solista + bajo
+    case 80: return (inst_t){ W_SQR,  ADSR(0xE0, 0x40, 0xC0, 0x70), 0, 16, 1 };   // square lead
+    case 81: return (inst_t){ W_SAW,  ADSR(0xE0, 0x40, 0xC0, 0x70), 0, 16, 1 };   // saw lead
+    case 87: return (inst_t){ W_DIST, ADSR(0xE0, 0x44, 0xC0, 0x80), 0, 16, 0 };   // lead + bass
     default: {
         inst_t in = family[p >> 3];
         in.gain = 16;
@@ -275,7 +275,7 @@ static inst_t prog_inst(int p)
     }
 }
 
-// ---------------------------------------------------------------- estado de canales y voces
+// ---------------------------------------------------------------- channel and voice state
 typedef struct { uint8_t prog, vol, pan, expr; int16_t bend; uint8_t sustain; } chan_t;
 static chan_t ch[16];
 typedef struct { int8_t ch, note; uint32_t age; uint8_t held, sus; } vstate_t;
@@ -294,9 +294,9 @@ static int alloc_voice(void)
     uint32_t act = AUD_ACTIVE;
     int best = -1;
     uint32_t oldest = 0xFFFFFFFF;
-    for (int v = 0; v < MIDI_VOICES; v++)              // libre
+    for (int v = 0; v < MIDI_VOICES; v++)              // free
         if (!(act >> v & 1)) return v;
-    for (int v = 0; v < MIDI_VOICES; v++)              // en relajación, la más antigua
+    for (int v = 0; v < MIDI_VOICES; v++)              // in release, the oldest
         if (!vs[v].held && vs[v].age < oldest) { oldest = vs[v].age; best = v; }
     if (best >= 0) return best;
     for (int v = 0; v < MIDI_VOICES; v++)
@@ -304,7 +304,7 @@ static int alloc_voice(void)
     return best;
 }
 
-// salida por el OPL2 (oplsynth.c) en lugar de las voces de muestras
+// output through the OPL2 (oplsynth.c) instead of the sample voices
 static int use_opl;
 void oplsyn_reset(void);
 void oplsyn_note_on(int ch, int note, int vel, int prog);
@@ -327,7 +327,7 @@ void midi_note_on(int c, int note, int vel)
     if (v < 0) return;
     int vol = vel * ch[c].vol / 127 * ch[c].expr / 127 * 2 * music_vol / 255;  // 0..254
     int pan = ch[c].pan * 2;
-    if (c == 9) {                                              // percusión GM
+    if (c == 9) {                                              // GM percussion
         const sample_t *s;
         uint32_t pitch = 0x10000;
         if (note == 35 || note == 36) { s = &drum_kick; vol = vol * 3 / 2; }
@@ -338,21 +338,21 @@ void midi_note_on(int c, int note, int vel)
         else if (note == 49 || note == 52 || note == 55 || note == 57) s = &drum_crash;
         else if (note == 41 || note == 43 || note == 45 || note == 47 || note == 48 || note == 50) {
             s = &drum_tom;
-            pitch = 0xA000 + (uint32_t)(note - 41) * 0x1400;     // toms de grave a agudo
+            pitch = 0xA000 + (uint32_t)(note - 41) * 0x1400;     // toms from low to high
         } else s = &drum_hat;
         if (vol > 255) vol = 255;
         snd_voice(v, s, pitch, vol, pan, ADSR(0xFF, 0, 0xFF, 0x90));
     } else {
         inst_t in = prog_inst(ch[c].prog);
         int n = note + in.oct * 12;
-        int lv = (n - 36) / 12;                                // tabla según la octava
+        int lv = (n - 36) / 12;                                // table according to the octave
         if (lv < 0) lv = 0;
         if (lv >= NLEVEL) lv = NLEVEL - 1;
         vol = vol * in.gain / 16;
-        if (in.layer) vol = vol * 3 / 4;                       // dos voces: algo menos cada una
+        if (in.layer) vol = vol * 3 / 4;                       // two voices: a bit less each
         if (vol > 255) vol = 255;
         snd_voice(v, &wave[in.wave][lv], note_pitch(n, ch[c].bend), vol, pan, in.adsr);
-        if (in.layer) {                                        // 2a voz +10 centésimas: más gruesa
+        if (in.layer) {                                        // 2nd voice +10 cents: thicker
             vs[v] = (vstate_t){ (int8_t)c, (int8_t)note, ++vage, 1, 0 };
             int v2 = alloc_voice();
             if (v2 >= 0 && v2 != v) {
@@ -402,14 +402,14 @@ static void controller(int c, int cc, int val)
     }
 }
 
-// ---------------------------------------------------------------- secuenciador SMF
+// ---------------------------------------------------------------- SMF sequencer
 #define MAXTRK 32
 typedef struct { const uint8_t *p, *end; uint32_t next; uint8_t run; uint8_t done; } trk_t;
 static trk_t trk[MAXTRK];
 static int ntrk, division, playing, looping;
 static const uint8_t *smf_data;
 static uint32_t smf_len;
-static uint32_t us_per_tick_q8;           // microsegundos por tick (Q8)
+static uint32_t us_per_tick_q8;           // microseconds per tick (Q8)
 static uint32_t now_tick, last_us, frac_us;
 
 static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
@@ -431,7 +431,7 @@ static int parse(void)
     if (smf_len < 14 || memcmp(p, "MThd", 4)) return -1;
     uint32_t hl = be32(p + 4);
     division = (p[12] << 8) | p[13];
-    if (division & 0x8000) return -2;              // SMPTE: no soportado
+    if (division & 0x8000) return -2;              // SMPTE: not supported
     p += 8 + hl;
     ntrk = 0;
     while (p + 8 <= end && ntrk < MAXTRK) {
@@ -476,7 +476,7 @@ void midi_volume(int vol) { music_vol = vol < 0 ? 0 : vol > 255 ? 255 : vol; opl
 
 int midi_use_opl(const void *genmidi)
 {
-    OPL_GAIN = 0x60;                               // x1,5: margen para 9 voces (sin OPL2 se lee 0)
+    OPL_GAIN = 0x60;                               // x1.5: headroom for 9 voices (without OPL2 it reads 0)
     if ((OPL_GAIN & 0xFF) != 0x60) return -1;
     all_off();
     oplsyn_bank(genmidi);

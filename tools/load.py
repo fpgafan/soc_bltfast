@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
-load.py - Carga un programa en el SoC bltfast por la UART (USB del BL616).
+load.py - Loads a program into the bltfast SoC over the UART (BL616 USB).
 
   python load.py prog.bin [--port COM4] [--baud 2000000] [--term] [--addr 0x40000000]
   python load.py --monitor-only [--port COM4] [--baud 2000000]
-                                     solo el terminal, sin reiniciar la placa
+                                     terminal only, without resetting the board
 
-  1. Envía "RVRST!" a 115200 y a la velocidad rápida (el programa anterior puede
-     haber dejado la UART en cualquiera de las dos): la placa vuelve a la ROM
-  2. Espera "RVBOOT", pide la velocidad rápida ("RVSP" + divisor) si --baud
-  3. Envía "RVLD" + dirección + longitud + CRC32 + datos y espera "OK"
-  4. Con --term se queda mostrando lo que llega (Ctrl+C para salir)
+  1. Sends "RVRST!" at 115200 and at the fast rate (the previous program may
+     have left the UART at either one): the board goes back to the ROM
+  2. Waits for "RVBOOT", requests the fast rate ("RVSP" + divider) if --baud
+  3. Sends "RVLD" + address + length + CRC32 + data and waits for "OK"
+  4. With --term it keeps showing whatever arrives (Ctrl+C to quit)
 """
 import os, sys, time, struct, zlib, argparse
 import serial
 import serial.tools.list_ports
 
-CLK = int(os.environ.get("BLT_CLK", 90_000_000))   # frecuencia del SoC
+CLK = int(os.environ.get("BLT_CLK", 90_000_000))   # SoC frequency
 
 
 def find_port():
@@ -49,20 +49,20 @@ def main():
     ap.add_argument("--baud", type=int, default=2_000_000)
     ap.add_argument("--addr", type=lambda x: int(x, 0), default=0x40000000)
     ap.add_argument("--term", action="store_true")
-    ap.add_argument("--monitor-only", action="store_true", help="solo abrir el terminal, sin cargar")
+    ap.add_argument("--monitor-only", action="store_true", help="only open the terminal, without loading")
     a = ap.parse_args()
     port = a.port or find_port()
     if not port:
-        print("no encuentro el puerto serie"); sys.exit(1)
+        print("serial port not found"); sys.exit(1)
     if a.monitor_only:
         s = serial.Serial(port, round(CLK / round(CLK / a.baud)), timeout=0.05)
-        print(f"puerto {port} a {s.baudrate} baudios (Ctrl+C para salir)")
+        print(f"port {port} at {s.baudrate} baud (Ctrl+C to quit)")
         terminal(s)
         return
     if not a.bin:
-        ap.error("falta el .bin (o --monitor-only)")
+        ap.error("missing .bin (or --monitor-only)")
     data = open(a.bin, "rb").read()
-    print(f"puerto {port}, {len(data)} bytes")
+    print(f"port {port}, {len(data)} bytes")
     s = serial.Serial(port, round(CLK / round(CLK / a.baud)), timeout=0.05)
     s.write(b"RVRST!")
     s.flush(); time.sleep(0.02)
@@ -70,18 +70,18 @@ def main():
     s.reset_input_buffer()
     s.write(b"RVRST!")
     if not wait_for(s, b"RVBOOT", 5):
-        print("\nla placa no responde (¿bitstream cargado?)"); sys.exit(1)
+        print("\nthe board does not respond (bitstream loaded?)"); sys.exit(1)
     if a.baud != 115200:
         div = round(CLK / a.baud)
         s.write(b"RVSP" + struct.pack("<I", div))
         if not wait_for(s, b"OK", 2):
-            print("\nno acepta el cambio de velocidad"); sys.exit(1)
+            print("\nbaud rate change not accepted"); sys.exit(1)
         time.sleep(0.01)
         s.baudrate = round(CLK / div)
     t0 = time.time()
     s.write(b"RVLD" + struct.pack("<III", a.addr, len(data), zlib.crc32(data)) + data)
     ok = wait_for(s, b"OK", 10 + len(data) / 20000)
-    print(f"\n{'cargado' if ok else 'ERROR'} en {time.time() - t0:.2f} s")
+    print(f"\n{'loaded' if ok else 'ERROR'} in {time.time() - t0:.2f} s")
     if not ok:
         sys.exit(1)
     if a.term:

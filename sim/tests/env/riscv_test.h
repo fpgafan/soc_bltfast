@@ -1,5 +1,5 @@
-// Entorno mínimo para riscv-tests en el SoC (simulación):
-//   tohost = 0x8000_0F00 (1 = PASS, (n<<1)|1 = FAIL en el test n)
+// Minimal environment for riscv-tests on the SoC (simulation):
+//   tohost = 0x8000_0F00 (1 = PASS, (n<<1)|1 = FAIL in test n)
 #ifndef _ENV_SOC_H
 #define _ENV_SOC_H
 #define TESTNUM gp

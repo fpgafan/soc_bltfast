@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-run_rand.py - Prueba diferencial de la CPU con programas RV32IM aleatorios.
+run_rand.py - Differential test of the CPU with random RV32IM programs.
 
-  python run_rand.py [semilla] [n_bloques]
+  python run_rand.py [seed] [n_blocks]
 
-El programa mezcla ALU, mul/div, loads/stores cacheados y por el alias sin
-caché (misma zona), stores de E/S, FENCE, bifurcaciones, bucles y llamadas.
-Al final guarda los registros y se comparan registros y memoria con pyiss.
+The program mixes ALU, mul/div, cached loads/stores and loads/stores through the
+uncached alias (same area), I/O stores, FENCE, branches, loops and calls.
+At the end it saves the registers, and registers and memory are compared with pyiss.
 """
 import os, sys, random, subprocess, struct
 import pyiss
@@ -15,7 +15,7 @@ import run_isa
 HERE = os.path.dirname(os.path.abspath(__file__))
 BUILD = os.path.join(HERE, "build")
 
-RSV = {0, 1, 8, 9, 18, 19, 31}            # x0, ra, s0, s1, s2, s3, t6 (bucles)
+RSV = {0, 1, 8, 9, 18, 19, 31}            # x0, ra, s0, s1, s2, s3, t6 (loops)
 REGS = [r for r in range(32) if r not in RSV]
 
 
@@ -56,13 +56,13 @@ def gen(rng, nblk):
         off = rng.randrange(0, 4096 // sz) * sz - 2048
         off = max(-2048, min(2047 - 3, off))
         off -= off % sz
-        base = rng.choice(["x8", "x8", "x8", "x9"])            # s0 cacheado / s1 sin caché
+        base = rng.choice(["x8", "x8", "x8", "x9"])            # s0 cached / s1 uncached
         if rng.random() < 0.5:
             op = {1: rng.choice(["lb", "lbu"]), 2: rng.choice(["lh", "lhu"]), 4: "lw"}[sz]
             return [f"{op} {R(rng)}, {off}({base})"]
         op = {1: "sb", 2: "sh", 4: "sw"}[sz]
         seq = [f"{op} {S(rng)}, {off}({base})"]
-        if rng.random() < 0.4:                                  # store -> load inmediato
+        if rng.random() < 0.4:                                  # store -> immediate load
             lop = {1: "lbu", 2: "lh", 4: "lw"}[sz]
             seq.append(f"{lop} {R(rng)}, {off}({rng.choice(['x8', 'x9'])})")
         return seq
@@ -74,7 +74,7 @@ def gen(rng, nblk):
         if k < 0.92:
             return mem()
         if k < 0.96:
-            return [f"sw {S(rng)}, 0(x18)"]                     # E/S (se ignora)
+            return [f"sw {S(rng)}, 0(x18)"]                     # I/O (ignored)
         return ["fence"]
 
     funcs = []
@@ -136,7 +136,7 @@ def main():
 
     iss = pyiss.ISS(img)
     if iss.run(2_000_000) != 1:
-        print("el ISS no terminó"); sys.exit(1)
+        print("the ISS did not finish"); sys.exit(1)
 
     vvp = run_isa.build_tb(os.environ.get("PHASE", "2.0"), os.environ.get("RDLAT", "2"))
     r = subprocess.run(["vvp", "-n", vvp, "+prog=rand.hex", "+maxcyc=3000000", "+dump"],
@@ -167,8 +167,8 @@ def main():
                 print(f"  mem[{0x40000000 + base + 4 * i:08x}]: rtl={data[i]:08x} iss={e:08x}")
             bad += 1
     if bad:
-        print(f"FAIL semilla={seed}: {bad} diferencias"); sys.exit(1)
-    print(f"PASS semilla={seed}")
+        print(f"FAIL seed={seed}: {bad} differences"); sys.exit(1)
+    print(f"PASS seed={seed}")
 
 
 if __name__ == "__main__":

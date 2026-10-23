@@ -1,5 +1,5 @@
 #!/bin/sh
-# torture.sh SEMILLA_INI SEMILLA_FIN [N] - programas aleatorios: emulador vs placa
+# torture.sh SEED_START SEED_END [N] - random programs: emulator vs board
 cd "$(dirname "$0")"
 export PATH=/c/riscv/xpack-riscv-none-elf-gcc-15.2.0-1/bin:$PATH
 B=build/torture
@@ -11,5 +11,5 @@ for s in $(seq $1 $2); do
   riscv-none-elf-objcopy -O binary $B/t$s.elf $B/t$s.bin
   exp=$(node ../tools/socemu.js $B/t$s.bin $B/vacio.img --frames 100000 --out $B 2>/dev/null | grep -a "^SIG" | tr -d '\r')
   got=$(PYTHONIOENCODING=utf-8 timeout 15 python ../tools/load.py $B/t$s.bin --port ${PORT:-COM4} --term 2>/dev/null | grep -a -o -m1 "SIG [0-9a-f]* [0-9a-f]*" | tr -d '\r')
-  if [ "$exp" = "$got" ]; then echo "semilla $s: ok ($exp)"; else echo "semilla $s: DISTINTO emulador='$exp' placa='$got'"; fi
+    if [ "$exp" = "$got" ]; then echo "seed $s: ok ($exp)"; else echo "seed $s: MISMATCH emulator='$exp' board='$got'"; fi
 done

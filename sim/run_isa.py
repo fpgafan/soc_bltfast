@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-run_isa.py - Ejecuta los riscv-tests (rv32ui + rv32um) sobre el RTL con Icarus.
+run_isa.py - Runs the riscv-tests (rv32ui + rv32um) on the RTL with Icarus.
 
-  python run_isa.py               todos
-  python run_isa.py add lw div    algunos
-Opciones de entorno: PHASE (ns, retraso del reloj SDRAM), RDLAT.
+  python run_isa.py               all
+  python run_isa.py add lw div    some
+Environment options: PHASE (ns, SDRAM clock delay), RDLAT.
 """
 import os, sys, subprocess, glob, struct
 
@@ -17,7 +17,7 @@ os.makedirs(BUILD, exist_ok=True)
 os.environ["PATH"] = os.pathsep.join([os.path.join(OCS, "bin"), os.path.join(OCS, "lib"),
                                       GCC, os.environ["PATH"]])
 
-SKIP = {"ma_data"}            # accesos desalineados: aquí producen excepción
+SKIP = {"ma_data"}            # misaligned accesses: they raise an exception here
 
 RTL = ["rtl/cpu/rv_core.v", "rtl/cpu/rv_muldiv.v", "rtl/cpu/icache.v", "rtl/cpu/dcache.v",
        "rtl/cpu/cpu_mem.v", "rtl/cpu/cpu.v", "rtl/mem/sdram_ctrl.v",

@@ -1658,7 +1658,7 @@ static void *I_OPL_RegisterSong(void *data, int len)
     // Reject anything which doesnt have this signature
 
 #ifdef BLTFAST
-    // conversión en memoria: sin ficheros temporales en la SD
+    // in-memory conversion: no temporary files on the SD
     (void)filename;
     if (IsMid(data, len) && len < MAXMIDLENGTH)
     {

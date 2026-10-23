@@ -1,19 +1,19 @@
 // ============================================================================
-// fat.c - FAT32 (y FAT16) mínima: directorio raíz, nombres 8.3
-//   lectura secuencial (la usa la ROM) + posicionamiento, escritura, creación,
-//   borrado y renombrado (para los programas; la ROM no los enlaza)
+// fat.c - Minimal FAT32 (and FAT16): root directory, 8.3 names
+//   sequential read (used by the ROM) + seeking, writing, creating,
+//   deleting and renaming (for programs; the ROM does not link them)
 // ============================================================================
 #include "lib.h"
 
 static uint8_t  sec[512] __attribute__((aligned(4)));
 static uint32_t fat_lba, data_lba, root_clus, root_lba, root_ents;
-static uint32_t spc;              // sectores por cluster
+static uint32_t spc;              // sectors per cluster
 static int      is32;
 static uint32_t cached_fat = 0xFFFFFFFF;
-static uint32_t nfat, fsz, nclus, fsinfo_lba;   // para escribir
-static uint32_t ent_lba, ent_off;               // entrada que está viendo dir_walk
+static uint32_t nfat, fsz, nclus, fsinfo_lba;   // for writing
+static uint32_t ent_lba, ent_off;               // entry dir_walk is looking at
 
-#define EOC 0x0FFFFFF8u           // clusters >= EOC: fin de cadena
+#define EOC 0x0FFFFFF8u           // clusters >= EOC: end of chain
 
 static uint32_t rd16(const uint8_t *p) { return p[0] | (p[1] << 8); }
 static uint32_t rd32(const uint8_t *p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24); }
@@ -25,17 +25,17 @@ static int is_fat_vbr(void)
     return (sec[0] == 0xEB || sec[0] == 0xE9) && rd16(sec + 11) == 512 && sec[13] && sec[16];
 }
 
-// errores: -1 lectura, -2 sin firma 55AA, -3 sin partición FAT,
-//          -4 sector de arranque no FAT, -5 exFAT, -6 NTFS
+// errors: -1 read, -2 no 55AA signature, -3 no FAT partition,
+//         -4 boot sector not FAT, -5 exFAT, -6 NTFS
 int fat_mount(void)
 {
     if (sd_read(0, sec)) return -1;
     uint32_t part = 0;
     if (sec[510] != 0x55 || sec[511] != 0xAA) return -2;
-    // ¿sector de arranque directo, MBR o GPT?
+    // direct boot sector, MBR or GPT?
     if (!is_fat_vbr() && memcmp(sec + 3, "EXFAT", 5) && memcmp(sec + 3, "NTFS", 4)) {
         int gpt = 0;
-        for (int i = 0; i < 4; i++) {          // la primera partición FAT del MBR
+        for (int i = 0; i < 4; i++) {          // the first FAT partition in the MBR
             const uint8_t *e = sec + 446 + 16 * i;
             uint8_t t = e[4];
             if (t == 0xEE) gpt = 1;
@@ -43,11 +43,11 @@ int fat_mount(void)
                 part = rd32(e + 8);
         }
         if (!part) {
-            for (int i = 0; i < 4 && !part; i++)  // si no, la primera no vacía (exFAT/NTFS: tipo 07)
+            for (int i = 0; i < 4 && !part; i++)  // otherwise, the first non-empty one (exFAT/NTFS: type 07)
                 if (sec[446 + 16 * i + 4] && sec[446 + 16 * i + 4] != 0xEE) part = rd32(sec + 446 + 16 * i + 8);
         }
-#ifndef BOOTROM                                // (la ROM no tiene sitio para GPT)
-        if (!part && gpt) {                    // GPT: primera entrada no vacía
+#ifndef BOOTROM                                // (the ROM has no room for GPT)
+        if (!part && gpt) {                    // GPT: first non-empty entry
             if (sd_read(1, sec)) return -1;
             if (memcmp(sec, "EFI PART", 8)) return -3;
             uint32_t ent = rd32(sec + 72);
@@ -96,7 +96,7 @@ static uint32_t next_clus(uint32_t c)
 
 static uint32_t clus_lba(uint32_t c) { return data_lba + (c - 2) * spc; }
 
-// recorre el directorio raíz; cb devuelve 1 para parar (ent_lba/ent_off = la entrada)
+// walks the root directory; cb returns 1 to stop (ent_lba/ent_off = the entry)
 static int dir_walk(int (*cb)(const uint8_t *e, void *ctx), void *ctx)
 {
     uint32_t c = root_clus, lba, n;
@@ -156,7 +156,7 @@ int fat_list(void (*cb)(const char *name83, uint32_t size))
     return dir_walk(list_cb, 0);
 }
 
-// avanza al siguiente cluster al cruzar el final de uno (pos ya actualizada)
+// moves to the next cluster when crossing the end of one (pos already updated)
 static void step(fat_file *f)
 {
     if (++f->lba_in_clus < spc) return;
@@ -167,7 +167,7 @@ static void step(fat_file *f)
     else f->cur = next_clus(f->cur);
 }
 
-// lectura secuencial (dst cualquiera; con dst alineado y bloques enteros va directo)
+// sequential read (any dst; with an aligned dst and whole blocks it goes direct)
 int fat_read(fat_file *f, void *dst, uint32_t len)
 {
     uint8_t *d = dst;
@@ -192,9 +192,9 @@ int fat_read(fat_file *f, void *dst, uint32_t len)
     return (int)done;
 }
 
-// ---------------------------------------------------------------- posicionamiento
+// ---------------------------------------------------------------- seeking
 
-// tabla de clusters del fichero en 'map' (n entradas): fat_seek pasa a ser O(1)
+// table of the file's clusters in 'map' (n entries): fat_seek becomes O(1)
 int fat_map(fat_file *f, uint32_t *map, uint32_t n)
 {
     uint32_t c = f->clus, i = 0;
@@ -205,7 +205,7 @@ int fat_map(fat_file *f, uint32_t *map, uint32_t n)
 
 uint32_t fat_cluster_bytes(void) { return spc * 512; }
 
-// sector de la tarjeta donde está la posición actual del fichero
+// card sector holding the current file position
 uint32_t fat_file_lba(const fat_file *f) { return clus_lba(f->cur) + f->lba_in_clus; }
 
 int fat_seek(fat_file *f, uint32_t pos)
@@ -219,7 +219,7 @@ int fat_seek(fat_file *f, uint32_t pos)
         f->prev = ci ? f->map[ci - 1] : 0;
         return 0;
     }
-    if (f->map && f->nmap && ci == f->nmap) {   // justo al final de la cadena
+    if (f->map && f->nmap && ci == f->nmap) {   // right at the end of the chain
         f->prev = f->map[ci - 1];
         f->cur = 0x0FFFFFFF;
         return 0;
@@ -230,11 +230,11 @@ int fat_seek(fat_file *f, uint32_t pos)
     return 0;
 }
 
-// ---------------------------------------------------------------- escritura
+// ---------------------------------------------------------------- writing
 static uint32_t free_hint = 2;
 
-// escribe la entrada c de todas las copias de la FAT (la última, la copia 0,
-// queda en 'sec' como caché)
+// writes entry c of every copy of the FAT (the last one, copy 0,
+// stays in 'sec' as a cache)
 static int set_fat(uint32_t c, uint32_t v)
 {
     uint32_t off = is32 ? c * 4 : c * 2;
@@ -257,14 +257,14 @@ static void fsinfo_unknown(void)
     if (sd_read(fsinfo_lba, sec)) { cached_fat = 0xFFFFFFFF; return; }
     cached_fat = 0xFFFFFFFF;
     if (rd32(sec) != 0x41615252u) return;
-    uint32_t hint = rd32(sec + 492);                 // pista del primer libre
+    uint32_t hint = rd32(sec + 492);                 // hint for the first free cluster
     if (hint >= 2 && hint < nclus + 2) free_hint = hint;
-    wr32(sec + 488, 0xFFFFFFFFu);                    // libres: desconocido
+    wr32(sec + 488, 0xFFFFFFFFu);                    // free count: unknown
     wr32(sec + 492, 0xFFFFFFFFu);
     sd_write(fsinfo_lba, sec);
 }
 
-// busca un cluster libre, lo marca como fin de cadena y lo enlaza tras 'prev'
+// finds a free cluster, marks it as end of chain and links it after 'prev'
 static uint32_t alloc_clus(uint32_t prev)
 {
     fsinfo_unknown();
@@ -277,7 +277,7 @@ static uint32_t alloc_clus(uint32_t prev)
         free_hint = c + 1;
         return c;
     }
-    return 0;                                        // disco lleno
+    return 0;                                        // disk full
 }
 
 static int free_chain(uint32_t c)
@@ -295,7 +295,7 @@ int fat_write(fat_file *f, const void *src, uint32_t len)
     const uint8_t *s = src;
     uint32_t done = 0;
     while (done < len) {
-        if (f->cur < 2 || f->cur >= EOC) {          // sin cluster: añadir uno
+        if (f->cur < 2 || f->cur >= EOC) {          // no cluster: add one
             uint32_t c = alloc_clus(f->prev);
             if (!c) break;
             if (!f->prev) f->clus = c;
@@ -323,7 +323,7 @@ int fat_write(fat_file *f, const void *src, uint32_t len)
     return (int)done;
 }
 
-// actualiza la entrada del directorio (primer cluster y tamaño)
+// updates the directory entry (first cluster and size)
 int fat_close(fat_file *f)
 {
     if (sd_read(f->dir_lba, sec)) return -1;
@@ -332,11 +332,11 @@ int fat_close(fat_file *f)
     wr16(e + 20, f->clus >> 16);
     wr16(e + 26, f->clus);
     wr32(e + 28, f->size);
-    e[11] |= 0x20;                                   // archivo modificado
+    e[11] |= 0x20;                                   // file modified
     return sd_write(f->dir_lba, sec);
 }
 
-// busca una entrada libre del raíz (en FAT32 lo amplía si está lleno)
+// finds a free root entry (on FAT32 it grows the root if full)
 static int dir_slot(void)
 {
     uint32_t c = root_clus, lba, n;
@@ -348,7 +348,7 @@ static int dir_slot(void)
             for (int i = 0; i < 512; i += 32)
                 if (sec[i] == 0x00 || sec[i] == 0xE5) { ent_lba = lba + s; ent_off = (uint32_t)i; return 0; }
         }
-        if (!is32) return -1;                        // FAT16: raíz de tamaño fijo
+        if (!is32) return -1;                        // FAT16: fixed-size root
         uint32_t nx = next_clus(c);
         if (nx >= EOC) {
             nx = alloc_clus(c);
@@ -362,7 +362,7 @@ static int dir_slot(void)
     }
 }
 
-// crea el fichero (o lo vacía si ya existe) y lo deja abierto para escribir
+// creates the file (or truncates it if it exists) and leaves it open for writing
 int fat_create(fat_file *f, const char *name83)
 {
     if (fat_open(f, name83) == 0) {
@@ -371,12 +371,12 @@ int fat_create(fat_file *f, const char *name83)
         return fat_close(f);
     }
     if (dir_slot()) return -2;
-    // dir_slot deja el sector de la entrada en 'sec'
+    // dir_slot leaves the entry's sector in 'sec'
     uint8_t *e = sec + ent_off;
     memset(e, 0, 32);
     memcpy(e, name83, 11);
     e[11] = 0x20;
-    wr16(e + 16, (46u << 9) | (10u << 5) | 21u);     // fecha: 21/10/2026
+    wr16(e + 16, (46u << 9) | (10u << 5) | 21u);     // date: 21/10/2026
     wr16(e + 18, (46u << 9) | (10u << 5) | 21u);
     wr16(e + 24, (46u << 9) | (10u << 5) | 21u);
     if (sd_write(ent_lba, sec)) return -3;

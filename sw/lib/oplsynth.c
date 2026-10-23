@@ -1,30 +1,30 @@
 // ============================================================================
-// oplsynth.c - Instrumentos MIDI sobre el OPL2 por hardware (rtl/audio/opl2.v)
+// oplsynth.c - MIDI instruments on the hardware OPL2 (rtl/audio/opl2.v)
 //
-//  Recibe las notas del secuenciador de midi.c (midi_use_opl) y las reparte
-//  entre los 9 canales del chip con un banco de instrumentos en formato
-//  GENMIDI de DMX (el de Doom): 128 programas GM + 47 percusiones (notas
-//  35-81 del canal 10), cada uno con 1 o 2 voces de 2 operadores.
-//  Por defecto, el banco libre de Freedoom (genmidi_fd.c); oplsyn_load_wad()
-//  carga el de un WAD de la SD (p. ej. el original de DOOM.WAD).
+//  Receives notes from the midi.c sequencer (midi_use_opl) and spreads them
+//  across the chip's 9 channels using an instrument bank in DMX
+//  GENMIDI format (Doom's): 128 GM programs + 47 percussion (notes
+//  35-81 on channel 10), each with 1 or 2 two-operator voices.
+//  By default, the free Freedoom bank (genmidi_fd.c); oplsyn_load_wad()
+//  loads the one from a WAD on the SD (e.g. the original from DOOM.WAD).
 // ============================================================================
 #include "lib.h"
 #include "audio.h"
 
 extern const uint8_t genmidi_freedoom[175 * 36];
 
-// instrumento GENMIDI: 36 bytes
-//   +0 flags (1 = tono fijo, 4 = dos voces), +2 afinación de la 2a voz
-//   (128 = nada), +3 nota fija, +4 voz 0, +20 voz 1
-// voz (16 bytes): modulador (+0 0x20, +1 0x60, +2 0x80, +3 0xE0, +4 KSL,
-//   +5 nivel), +6 realimentación/conexión, portadora (+7..+12), +13 -,
-//   +14 desplazamiento de nota (int16)
+// GENMIDI instrument: 36 bytes
+//   +0 flags (1 = fixed pitch, 4 = two voices), +2 tuning of the 2nd voice
+//   (128 = none), +3 fixed note, +4 voice 0, +20 voice 1
+// voice (16 bytes): modulator (+0 0x20, +1 0x60, +2 0x80, +3 0xE0, +4 KSL,
+//   +5 level), +6 feedback/connection, carrier (+7..+12), +13 -,
+//   +14 note offset (int16)
 #define INSTR(i) (bank + (i) * 36)
 
 static const uint8_t *bank = genmidi_freedoom;
 static uint8_t wad_bank[175 * 36];
 
-// F-number de las notas 0..11 en pasos de 1/32 de semitono (bloque = octava - 1)
+// F-numbers of notes 0..11 in 1/32-semitone steps (block = octave - 1)
 static const uint16_t fnum_tab[12 * 32] = {
     345, 345, 346, 347, 347, 348, 349, 349, 350, 351, 351, 352, 352, 353, 354, 354,
     355, 356, 356, 357, 358, 358, 359, 359, 360, 361, 361, 362, 363, 363, 364, 365,
@@ -51,7 +51,7 @@ static const uint16_t fnum_tab[12 * 32] = {
     651, 652, 653, 655, 656, 657, 658, 659, 661, 662, 663, 664, 665, 666, 668, 669,
     670, 671, 673, 674, 675, 676, 677, 679, 680, 681, 682, 684, 685, 686, 687, 689,
 };
-// atenuación (pasos de 0,75 dB) para un volumen MIDI 0..127 (curva GM: 40 log)
+// attenuation (0.75 dB steps) for a MIDI volume 0..127 (GM curve: 40 log)
 static const uint8_t vol_tl[128] = {
     63, 63, 63, 63, 63, 63, 63, 63, 63, 61, 59, 57, 55, 53, 51, 49,
     48, 47, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34, 33, 33,
@@ -64,22 +64,22 @@ static const uint8_t vol_tl[128] = {
 };
 
 typedef struct {
-    int8_t   ch, note;                  // canal y nota MIDI (-1 = libre)
-    uint8_t  held, sus;                 // tecla pulsada / sostenida por el pedal
-    uint8_t  vol;                       // volumen de la nota (velocidad)
-    uint8_t  second;                    // 2a voz de un instrumento doble
-    const uint8_t *in, *v;              // instrumento y voz GENMIDI
-    uint16_t fb;                        // valor de 0xB0 sin la tecla (bloque, F-number alto)
+    int8_t   ch, note;                  // MIDI channel and note (-1 = free)
+    uint8_t  held, sus;                 // key held / sustained by the pedal
+    uint8_t  vol;                       // note volume (velocity)
+    uint8_t  second;                    // 2nd voice of a double instrument
+    const uint8_t *in, *v;              // GENMIDI instrument and voice
+    uint16_t fb;                        // 0xB0 value without key-on (block, F-number high)
     uint32_t age;
 } ovoice_t;
 
 static ovoice_t ov[9];
 static uint32_t oage;
 static uint8_t  cvol[16], cexpr[16], csus[16];
-static int16_t  cbend[16];              // 1/32 de semitono (-64..64)
+static int16_t  cbend[16];              // 1/32 semitone (-64..64)
 static uint8_t  master = 255;
 
-static int slot_off(int c) { return (c / 3) * 8 + c % 3; }   // modulador; portadora +3
+static int slot_off(int c) { return (c / 3) * 8 + c % 3; }   // modulator; carrier +3
 
 static void key(int c, int on) { OPL_REG(0xB0 + c) = ov[c].fb | (on ? 0x20u : 0u); }
 
@@ -87,14 +87,14 @@ static void set_freq(int c)
 {
     const ovoice_t *o = &ov[c];
     int n;
-    if (o->in[0] & 1) n = o->in[3];                       // tono fijo (percusión)
+    if (o->in[0] & 1) n = o->in[3];                       // fixed pitch (percussion)
     else n = o->note + (int16_t)(o->v[14] | o->v[15] << 8);
     while (n < 0) n += 12;
     while (n > 95) n -= 12;
-    // +1 octava: DMX (el driver de Doom) toca todo una octava por encima de
-    // la nota MIDI y los bancos GENMIDI están afinados contando con ello
+    // +1 octave: DMX (Doom's driver) plays everything one octave above
+    // the MIDI note and the GENMIDI banks are tuned with that in mind
     int idx = (n + 12) * 32 + (o->ch == 9 ? 0 : cbend[o->ch]);
-    if (o->second) idx += (o->in[2] - 128) / 2;           // 2a voz algo desafinada: más gruesa
+    if (o->second) idx += (o->in[2] - 128) / 2;           // slightly detuned 2nd voice: thicker
     if (idx < 0) idx = 0;
     int blk = idx / (12 * 32) - 1;
     uint32_t f = fnum_tab[idx % (12 * 32)];
@@ -111,10 +111,10 @@ static void set_level(int c)
     int v = o->vol * cvol[o->ch] / 127 * cexpr[o->ch] / 127 * master / 255;
     int att = vol_tl[v > 127 ? 127 : v];
     int m = slot_off(c);
-    int car = (o->v[12] & 0x3F) + att;                    // nivel de la portadora
+    int car = (o->v[12] & 0x3F) + att;                    // carrier level
     OPL_REG(0x40 + m + 3) = (o->v[11] & 0xC0) | (uint32_t)(car > 63 ? 63 : car);
     int mod = o->v[5] & 0x3F;
-    if (o->v[6] & 1) mod += att;                          // síntesis aditiva: el modulador también suena
+    if (o->v[6] & 1) mod += att;                          // additive synthesis: the modulator sounds too
     OPL_REG(0x40 + m) = (o->v[4] & 0xC0) | (uint32_t)(mod > 63 ? 63 : mod);
 }
 
@@ -133,10 +133,10 @@ static int alloc(void)
 {
     int best = -1;
     uint32_t oldest = 0xFFFFFFFFu;
-    for (int c = 0; c < 9; c++)                           // libre o ya soltada, la más antigua
+    for (int c = 0; c < 9; c++)                           // free or already released, the oldest
         if (!ov[c].held && !ov[c].sus && ov[c].age < oldest) { oldest = ov[c].age; best = c; }
     if (best >= 0) return best;
-    for (int c = 0; c < 9; c++)                           // si no, se roba la más antigua
+    for (int c = 0; c < 9; c++)                           // otherwise, steal the oldest
         if (ov[c].age < oldest) { oldest = ov[c].age; best = c; }
     return best;
 }
@@ -153,7 +153,7 @@ static void start(int ch, int note, int vel, const uint8_t *in, int second)
     key(c, 1);
 }
 
-// ---------------------------------------------------------------- interfaz con midi.c
+// ---------------------------------------------------------------- interface with midi.c
 void oplsyn_reset(void)
 {
     for (int c = 0; c < 9; c++) {
@@ -163,7 +163,7 @@ void oplsyn_reset(void)
         OPL_REG(0x40 + slot_off(c) + 3) = 0x3F;
     }
     for (int i = 0; i < 16; i++) { cvol[i] = 100; cexpr[i] = 127; csus[i] = 0; cbend[i] = 0; }
-    OPL_REG(0x01) = 0x20;                                 // ondas 1-3 habilitadas
+    OPL_REG(0x01) = 0x20;                                 // waveforms 1-3 enabled
     OPL_REG(0x08) = 0x40;
     OPL_REG(0xBD) = 0x00;
 }
@@ -177,7 +177,7 @@ void oplsyn_note_on(int ch, int note, int vel, int prog)
     } else
         in = INSTR(prog & 127);
     start(ch, note, vel, in, 0);
-    if (in[0] & 4) start(ch, note, vel, in, 1);           // instrumento de dos voces
+    if (in[0] & 4) start(ch, note, vel, in, 1);           // two-voice instrument
 }
 
 void oplsyn_note_off(int ch, int note)
@@ -229,7 +229,7 @@ void oplsyn_bank(const void *genmidi)
     else bank = memcmp(g, "#OPL_II#", 8) == 0 ? g + 8 : g;
 }
 
-// lee el lump GENMIDI de un WAD de la raíz de la SD ("DOOM    WAD")
+// reads the GENMIDI lump from a WAD in the SD root ("DOOM    WAD")
 int oplsyn_load_wad(const char *wad83)
 {
     fat_file f;
@@ -246,5 +246,5 @@ int oplsyn_load_wad(const char *wad83)
         bank = wad_bank;
         return 0;
     }
-    return -5;                                            // no tiene GENMIDI
+    return -5;                                            // has no GENMIDI
 }

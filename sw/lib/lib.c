@@ -1,5 +1,5 @@
 // ============================================================================
-// lib.c - UART, printf mínimo, tiempo, CRC32, memoria
+// lib.c - UART, minimal printf, time, CRC32, memory
 // ============================================================================
 #include <stdarg.h>
 #include "lib.h"
@@ -44,7 +44,7 @@ static void put_u(uint32_t v, int base, int width, char pad)
     while (n) uart_putc(b[--n]);
 }
 
-// %d %u %x %s %c %%, con ancho y relleno con 0 (p. ej. %08x)
+// %d %u %x %s %c %%, with width and zero padding (e.g. %08x)
 void printf(const char *fmt, ...)
 {
     va_list ap;

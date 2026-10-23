@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-run_vid.py - Prueba de vídeo + HDMI: graba un cuadro TMDS del RTL y lo decodifica.
+run_vid.py - Video + HDMI test: records one TMDS frame from the RTL and decodes it.
 
-  python run_vid.py [semilla] [--sx=N --sy=N --wrapw=N --wraph=N --stride=N]
+  python run_vid.py [seed] [--sx=N --sy=N --wrapw=N --wraph=N --stride=N]
 
-Comprueba: estructura (525 líneas, 480 periodos de vídeo de 640 píxeles con
-preámbulo y guardas, sincronismos), píxeles == paleta[framebuffer] con el
-scroll/wrap pedidos, data islands (guardas, ECC BCH de cabecera y
-subpaquetes), ACR (N=6144, CTS=25200), AVI/Audio InfoFrame (sumas) y que las
-muestras de audio llegan en orden, con paridad y bloque IEC 60958 correctos.
+It checks: structure (525 lines, 480 video periods of 640 pixels with
+preamble and guards, syncs), pixels == palette[framebuffer] with the
+requested scroll/wrap, data islands (guards, header and subpacket BCH
+ECC), ACR (N=6144, CTS=25200), AVI/Audio InfoFrame (checksums) and that the
+audio samples arrive in order, with correct parity and IEC 60958 blocks.
 """
 import os, sys, random, subprocess
 
@@ -85,15 +85,15 @@ def main():
             print("  ERROR:", m)
         errs.append(m)
 
-    # ------------------------------------------------ recorrido de la secuencia
-    vid_lines = []          # (índice inicio, píxeles)
+    # ------------------------------------------------ walk through the sequence
+    vid_lines = []          # (start index, pixels)
     packets = []
     i = 0
     vs_prev, line_vs = None, []
     hs_count = 0
     while i < n:
         c0, c1, c2 = ch[0][i], ch[1][i], ch[2][i]
-        # preámbulo de vídeo / island: 8 controles con CTL concretos
+        # video / island preamble: 8 control periods with specific CTL values
         if c1 in CTRL and c2 in CTRL and c0 in CTRL:
             if i + 10 <= n and all(ch[1][i + k] == 0b0010101011 and ch[2][i + k] == 0b1101010100 and ch[0][i + k] in CTRL for k in range(8)) \
                     and (ch[0][i + 8], ch[1][i + 8], ch[2][i + 8]) == VG and (ch[0][i + 9], ch[1][i + 9], ch[2][i + 9]) == VG:
@@ -108,31 +108,31 @@ def main():
             if i + 10 <= n and all(ch[1][i + k] == 0b0010101011 and ch[2][i + k] == 0b0010101011 for k in range(8)):
                 j = i + 8
                 if not (ch[1][j] == DG12 and ch[2][j] == DG12 and ch[1][j + 1] == DG12 and ch[2][j + 1] == DG12):
-                    err(f"guarda inicial de island incorrecta en {j}")
+                    err(f"wrong island leading guard at {j}")
                 j += 2
                 while ch[1][j] in TERC_D and ch[2][j] in TERC_D and ch[1][j] != DG12:
                     blk = []
                     for k in range(32):
                         d0 = TERC_D.get(ch[0][j + k]); d1 = TERC_D.get(ch[1][j + k]); d2 = TERC_D.get(ch[2][j + k])
                         if d0 is None or d1 is None or d2 is None:
-                            err(f"carácter no TERC4 dentro del island en {j + k}")
+                            err(f"non-TERC4 character inside the island at {j + k}")
                             d0 = d1 = d2 = 0
                         blk.append((d0, d1, d2))
                     packets.append((j, blk))
                     j += 32
                 if not (ch[1][j] == DG12 and ch[2][j] == DG12 and ch[1][j + 1] == DG12):
-                    err(f"guarda final de island incorrecta en {j}")
+                    err(f"wrong island trailing guard at {j}")
                 i = j + 2
                 continue
         i += 1
 
-    # ------------------------------------------------ vídeo
+    # ------------------------------------------------ video
     if len(vid_lines) != 480:
-        err(f"{len(vid_lines)} líneas de vídeo (se esperaban 480)")
+        err(f"{len(vid_lines)} video lines (480 expected)")
     wrapb = (256 << ww) if ww else 0
     for y, (pos, px) in enumerate(vid_lines[:480]):
         if len(px) != 640:
-            err(f"línea {y}: {len(px)} píxeles")
+            err(f"line {y}: {len(px)} pixels")
             continue
         row = (sy + y) % wh if wh else sy + y
         bad = 0
@@ -142,11 +142,11 @@ def main():
             if px[x] != e:
                 bad += 1
                 if bad == 1:
-                    err(f"línea {y} x={x}: {px[x]:06x} esperado {e:06x}")
+                    err(f"line {y} x={x}: {px[x]:06x} expected {e:06x}")
         if y > 0 and pos - vid_lines[y - 1][0] != 800:
-            err(f"línea {y}: separación {pos - vid_lines[y - 1][0]} (800)")
+            err(f"line {y}: spacing {pos - vid_lines[y - 1][0]} (800)")
 
-    # ------------------------------------------------ sincronismos (canal 0 en control/islands)
+    # ------------------------------------------------ syncs (channel 0 in control/islands)
     hs_low = 0
     vs_low_lines = set()
     invid = bytearray(n)
@@ -168,11 +168,11 @@ def main():
         if not (b & 2):
             vs_low_lines.add(k // 800)
     if not 96 * 525 <= hs_low <= 96 * 526 + 4:
-        err(f"HSYNC activo {hs_low} ciclos (esperado {96 * 525})")
+        err(f"HSYNC active for {hs_low} cycles (expected {96 * 525})")
     if len(vs_low_lines) not in (2, 3, 4):
-        err(f"VSYNC activo en {len(vs_low_lines)} líneas")
+        err(f"VSYNC active on {len(vs_low_lines)} lines")
 
-    # ------------------------------------------------ paquetes
+    # ------------------------------------------------ packets
     types = {}
     samples = []
     fctr = []
@@ -186,11 +186,11 @@ def main():
                 bits.append((blk[k][2] >> s) & 1)
             sp.append(bits)
         if ecc(hb[:24]) != sum(b << i for i, b in enumerate(hb[24:32])):
-            err(f"ECC de cabecera incorrecto en {pos}")
+            err(f"wrong header ECC at {pos}")
         for s in range(4):
             if ecc(sp[s][:56]) != sum(b << i for i, b in enumerate(sp[s][56:64])):
-                err(f"ECC del subpaquete {s} incorrecto en {pos}")
-        # bit 3 del canal 0: 1 salvo el primer carácter del primer paquete del island
+                err(f"wrong ECC for subpacket {s} at {pos}")
+        # bit 3 of channel 0: 1 except for the first character of the island's first packet
         hv = sum(b << i for i, b in enumerate(hb[:24]))
         typ = hv & 0xFF
         types[typ] = types.get(typ, 0) + 1
@@ -207,9 +207,9 @@ def main():
             pb = [b for s in range(4) for b in byts[s]]
             tot = (typ + ((hv >> 8) & 0xFF) + ln + sum(pb[:ln + 1])) & 0xFF
             if tot != 0:
-                err(f"InfoFrame {typ:#x}: suma {tot:#x}")
+                err(f"InfoFrame {typ:#x}: checksum {tot:#x}")
             if typ == 0x82 and pb[4] != 1:
-                err("AVI: VIC distinto de 1")
+                err("AVI: VIC other than 1")
         elif typ == 0x02:
             present = (hv >> 8) & 15
             bflag = (hv >> 20) & 15
@@ -219,28 +219,28 @@ def main():
                     l, r_ = (x >> 8) & 0xFFFF, (x >> 32) & 0xFFFF
                     pl = bin(x & 0xFFFFFF).count("1") + ((x >> 50) & 1) + ((x >> 49) & 1) + ((x >> 48) & 1)
                     if ((x >> 51) & 1) != pl & 1:
-                        err("paridad L incorrecta")
+                        err("wrong L parity")
                     pr = bin((x >> 24) & 0xFFFFFF).count("1") + ((x >> 54) & 1) + ((x >> 53) & 1) + ((x >> 52) & 1)
                     if ((x >> 55) & 1) != pr & 1:
-                        err("paridad R incorrecta")
+                        err("wrong R parity")
                     samples.append((l, r_))
                     fctr.append(bflag >> s & 1)
         elif typ != 0x00:
-            err(f"paquete desconocido {typ:#x}")
-    print(f"islands: {len(packets)} paquetes, tipos { {hex(k): v for k, v in types.items()} }")
-    print(f"muestras de audio: {len(samples)} en un cuadro (esperado ~800)")
+            err(f"unknown packet {typ:#x}")
+    print(f"islands: {len(packets)} packets, types { {hex(k): v for k, v in types.items()} }")
+    print(f"audio samples: {len(samples)} in one frame (~800 expected)")
     for k in range(1, len(samples)):
         if samples[k][0] != (samples[k - 1][0] + 1) & 0xFFFF or samples[k][1] != samples[k][0] ^ 0xFFFF:
-            err(f"muestra {k}: {samples[k]} tras {samples[k - 1]}")
+            err(f"sample {k}: {samples[k]} after {samples[k - 1]}")
             break
     bpos = [k for k, b in enumerate(fctr) if b]
     if any(bpos[k + 1] - bpos[k] != 192 for k in range(len(bpos) - 1)) or not bpos:
-        err(f"bloques IEC 60958: marcas B en {bpos[:6]}")
+        err(f"IEC 60958 blocks: B marks at {bpos[:6]}")
     if not 780 <= len(samples) <= 825:
-        err("número de muestras fuera de rango")
+        err("number of samples out of range")
     if errs:
-        print(f"FAIL: {len(errs)} errores"); sys.exit(1)
-    print(f"PASS semilla={seed} sx={sx} sy={sy} wrapw={ww} wraph={wh} stride={stride}")
+        print(f"FAIL: {len(errs)} errors"); sys.exit(1)
+    print(f"PASS seed={seed} sx={sx} sy={sy} wrapw={ww} wraph={wh} stride={stride}")
 
 
 if __name__ == "__main__":

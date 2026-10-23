@@ -1,8 +1,8 @@
 // ============================================================================
-// tb_soc.v - SoC completo (soc_top con relojes de simulación) + modelo de SDRAM
-//   Imprime lo que sale por la UART. Con +load=<fichero> (bytes en hex, uno por
-//   línea) los envía por la UART cuando la ROM anuncia "RVBOOT".
-//   +baud=<n> (115200 por defecto) ; +maxms=<n> tiempo máximo simulado
+// tb_soc.v - Full SoC (soc_top with simulation clocks) + SDRAM model
+//   Prints what comes out of the UART. With +load=<file> (hex bytes, one per
+//   line) sends them over the UART when the ROM announces "RVBOOT".
+//   +baud=<n> (115200 by default) ; +maxms=<n> maximum simulated time
 // ============================================================================
 `timescale 1ns/1ps
 module tb_soc;
@@ -45,7 +45,7 @@ module tb_soc;
         if ($value$plusargs("baud=%d", baud)) ;
         bit_ns = 1.0e9 / baud;
     end
-    // receptor (salida del SoC)
+    // receiver (SoC output)
     always @(negedge tx) begin
         #(bit_ns * 1.5);
         for (k = 0; k < 8; k = k + 1) begin ch[k] = tx; #(bit_ns); end
@@ -56,7 +56,7 @@ module tb_soc;
             line = {line[8*63-1:0], ch};
         $write("%c", ch);
     end
-    // emisor (entrada del SoC)
+    // transmitter (SoC input)
     task send(input [7:0] b);
         integer j;
         begin
@@ -80,20 +80,20 @@ module tb_soc;
             $fclose(fd);
             wait (seen_boot);
             #20000;
-            $display("\n[tb] enviando %0d bytes", nload);
+            $display("\n[tb] sending %0d bytes", nload);
             for (k = 0; k < nload; k = k + 1) send(lbuf[k]);
-            $display("[tb] enviado");
+            $display("[tb] sent");
         end
     end
     initial begin
         #(maxms * 1000000.0);
-        $display("\n[tb] fin de tiempo (%0d ms), LEDs=%b, errores SDRAM=%0d", maxms, ~led_n, u_mem.errors);
+        $display("\n[tb] time limit reached (%0d ms), LEDs=%b, SDRAM errors=%0d", maxms, ~led_n, u_mem.errors);
         $finish;
     end
-    // fin pedido por el programa: escribir 0x5EB007 en SYS_SCRATCH+... (usamos un LED patrón)
+    // end requested by the program: write 0x5EB007 to SYS_SCRATCH+... (we use an LED pattern)
     always @(led_n) if (~led_n == 6'b101010) begin
         #1000;
-        $display("\n[tb] el programa terminó (LEDs=101010), errores SDRAM=%0d", u_mem.errors);
+        $display("\n[tb] the program finished (LEDs=101010), SDRAM errors=%0d", u_mem.errors);
         $finish;
     end
 endmodule

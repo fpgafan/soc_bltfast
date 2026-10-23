@@ -1,15 +1,15 @@
 // ============================================================================
-// tb_cpu.v - Banco de pruebas: cpu + sdram_ctrl + modelo de SDRAM + E/S mínima
-//   E/S: 0x8000_0000 consola (W: carácter), 0x8000_0F00 tohost (fin),
-//        0x8000_0F04/08 información de trap, 0x8000_0010 (R) contador.
-//   +prog=<hex>   programa cargado en la SDRAM (0x4000_0000)
-//   +rom=<hex>    ROM (por defecto: salta a 0x4000_0000)
-//   +maxcyc=<n>   límite de ciclos
+// tb_cpu.v - Testbench: cpu + sdram_ctrl + SDRAM model + minimal I/O
+//   I/O: 0x8000_0000 console (W: character), 0x8000_0F00 tohost (end),
+//        0x8000_0F04/08 trap information, 0x8000_0010 (R) counter.
+//   +prog=<hex>   program loaded into SDRAM (0x4000_0000)
+//   +rom=<hex>    ROM (default: jumps to 0x4000_0000)
+//   +maxcyc=<n>   cycle limit
 // ============================================================================
 `timescale 1ns/1ps
 module tb_cpu;
     parameter real PERIOD = 10.0;        // 100 MHz
-    parameter real SD_PHASE = 2.0;       // retraso del reloj de la SDRAM (ns)
+    parameter real SD_PHASE = 2.0;       // SDRAM clock delay (ns)
     parameter RD_LAT = 2;
 
     reg clk = 0;
@@ -74,7 +74,7 @@ module tb_cpu;
         .we_n(sd_we_n), .ba(sd_ba), .a(sd_a), .dqm(sd_dqm), .dq(sd_dq)
     );
 
-    // ---------------------------------------------------------------- E/S
+    // ---------------------------------------------------------------- I/O
     reg [8*256-1:0] progfile;
     integer trap_info0 = 0, trap_info1 = 0;
     always @(posedge clk) begin
@@ -89,7 +89,7 @@ module tb_cpu;
                 32'h8000_0F08: trap_info1 = io_wd;
                 32'h8000_0F00: begin
                     if (io_wd == 32'd1) begin
-                        $display("PASS  ciclos=%0d instr=%0d CPI=%0.3f", cyc, instret,
+                        $display("PASS  cycles=%0d instr=%0d CPI=%0.3f", cyc, instret,
                                  1.0 * cyc / instret);
                         if ($test$plusargs("dump")) begin
                             $writememh("rand_data.hex", u_mem.mem, 32'h40000, 32'h40000 + 1023);
@@ -97,10 +97,10 @@ module tb_cpu;
                         end
                     end
                     else if (io_wd == 32'd3)
-                        $display("FAIL  trap inesperado mcause=%0d", trap_info1);
+                        $display("FAIL  unexpected trap mcause=%0d", trap_info1);
                     else
                         $display("FAIL  test %0d", io_wd >> 1);
-                    if (u_mem.errors) $display("SDRAM: %0d errores de tiempos", u_mem.errors);
+                    if (u_mem.errors) $display("SDRAM: %0d timing errors", u_mem.errors);
                     $finish;
                 end
                 default: ;

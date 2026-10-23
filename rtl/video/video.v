@@ -1,31 +1,31 @@
 // ============================================================================
-// video.v - Controlador de vídeo 640x480@60, framebuffer 8 bpp con paleta
+// video.v - 640x480@60 video controller, 8 bpp framebuffer with palette
 //
-//  Dominio sys : registros, DMA de líneas desde la SDRAM (maestro 0), paleta
-//  Dominio pix : timing 800x525 a 25,2 MHz, lectura del buffer de línea y
-//                de la paleta, salida RGB888 + sincronismos
+//  sys domain: registers, line DMA from SDRAM (master 0), palette
+//  pix domain: 800x525 timing at 25.2 MHz, line buffer and palette
+//              reads, RGB888 output + syncs
 //
-//  Scroll por hardware: cada línea visible y se lee de la fila
-//     r = (SCROLL_Y + y) mod WRAP_H              (sin wrap si WRAP_H = 0)
-//  del lienzo que empieza en FB_BASE con FB_STRIDE bytes por fila, a partir
-//  de la columna SCROLL_X; con WRAP_W = n (n >= 2) la fila se trata como un
-//  anillo de 2^n * 256 bytes (scroll horizontal infinito).
-//  Los registros se copian al principio de cada cuadro (doble buffer sin
-//  cortes) o en cada línea si CTRL.LIVE = 1 (efectos de raster).
+//  Hardware scrolling: each visible line y is read from row
+//     r = (SCROLL_Y + y) mod WRAP_H              (no wrap if WRAP_H = 0)
+//  of the canvas starting at FB_BASE with FB_STRIDE bytes per row, starting
+//  at column SCROLL_X; with WRAP_W = n (n >= 2) the row is treated as a
+//  ring of 2^n * 256 bytes (infinite horizontal scrolling).
+//  Registers are latched at the start of each frame (tear-free double
+//  buffering) or on every line if CTRL.LIVE = 1 (raster effects).
 //
-//  Registros (base 0x8000_2000):
-//   +0x00 CTRL      [0] activar, [1] LIVE, [2] HDMI (data islands, audio)
-//   +0x04 FB_BASE   dirección en bytes (0x4xxx_xxxx o desplazamiento)
-//   +0x08 STRIDE    bytes por fila (múltiplo de 4)
-//   +0x0C SCROLL_X  píxeles
-//   +0x10 SCROLL_Y  filas
-//   +0x14 WRAP_W    [3:0] n: anillo horizontal de 2^n * 256 bytes (0 = no)
-//   +0x18 WRAP_H    filas del lienzo para el wrap vertical (0 = no)
-//   +0x1C BORDER    índice de color cuando la pantalla está desactivada
-//   +0x20 RASTER    línea de la interrupción RASTER
-//   +0x24 STATUS    R: [9:0] línea en preparación, [16] vblank, [31:20] cuadros
-//   +0x28 PENDING   R: [0] cambio de registros pendiente de aplicar
-//   Paleta: 0x8000_3000 + 4*i = 0x00RRGGBB (solo escritura)
+//  Registers (base 0x8000_2000):
+//   +0x00 CTRL      [0] enable, [1] LIVE, [2] HDMI (data islands, audio)
+//   +0x04 FB_BASE   byte address (0x4xxx_xxxx or offset)
+//   +0x08 STRIDE    bytes per row (multiple of 4)
+//   +0x0C SCROLL_X  pixels
+//   +0x10 SCROLL_Y  rows
+//   +0x14 WRAP_W    [3:0] n: horizontal ring of 2^n * 256 bytes (0 = off)
+//   +0x18 WRAP_H    canvas rows for vertical wrap (0 = off)
+//   +0x1C BORDER    color index when the display is disabled
+//   +0x20 RASTER    line of the RASTER interrupt
+//   +0x24 STATUS    R: [9:0] line being prepared, [16] vblank, [31:20] frames
+//   +0x28 PENDING   R: [0] register change pending
+//   Palette: 0x8000_3000 + 4*i = 0x00RRGGBB (write only)
 // ============================================================================
 `default_nettype none
 module video (
@@ -33,7 +33,7 @@ module video (
     input  wire        rst,
     input  wire        clk_pix,
     input  wire        rst_pix,
-    // registros
+    // registers
     input  wire        sel,
     input  wire        pal_sel,
     input  wire        we,
@@ -41,26 +41,26 @@ module video (
     input  wire [7:0]  pal_a,
     input  wire [31:0] wd,
     output reg  [31:0] rd,
-    output reg         irq_vblank,      // pulsos (dominio sys)
+    output reg         irq_vblank,      // pulses (sys domain)
     output reg         irq_raster,
-    // maestro SDRAM (lectura)
+    // SDRAM master (read)
     output reg         m_req,
     output reg  [22:2] m_addr,
     output reg  [3:0]  m_len,
     input  wire        m_ack,
     input  wire [31:0] m_rdata,
     input  wire        m_rvalid,
-    // salida (dominio pix)
+    // output (pix domain)
     output reg  [23:0] rgb,
     output reg         hsync,
     output reg         vsync,
     output reg         de,
-    output reg  [9:0]  pix_hcount,      // alineados con rgb/de
+    output reg  [9:0]  pix_hcount,      // aligned with rgb/de
     output reg  [9:0]  pix_vcount,
-    output reg         hdmi_mode        // dominio sys (cuasi estático)
+    output reg         hdmi_mode        // sys domain (quasi-static)
 );
     // =====================================================================
-    // Registros (sys)
+    // Registers (sys)
     // =====================================================================
     reg        r_en, r_live, r_hdmi;
     reg [22:0] r_base;
@@ -72,7 +72,7 @@ module video (
     reg [7:0]  r_border;
     reg [9:0]  r_raster;
     reg        r_dirty;
-    // copia activa (se usa al preparar las líneas)
+    // active copy (used while preparing lines)
     reg        c_en;
     reg [22:0] c_base;
     reg [13:0] c_stride;
@@ -98,9 +98,9 @@ module video (
         vc1 <= vc;  vc2 <= vc1; vc3 <= vc2; pix_vcount <= vc3;
     end
 
-    // petición de línea: al empezar cada línea vc se prepara la línea vc+1
+    // line request: at the start of each line vc, line vc+1 is prepared
     reg        lreq_tgl;
-    reg [9:0]  lreq_line;               // estable mientras el toggle viaja
+    reg [9:0]  lreq_line;               // stable while the toggle travels
     reg        vbl_tgl;
 
     always @(posedge clk_pix) begin
@@ -115,7 +115,7 @@ module video (
             end else
                 hc <= hc + 10'd1;
             if (hc == 10'd0) begin
-                // línea a preparar: vc+1 (o 0 durante la última línea)
+                // line to prepare: vc+1 (or 0 during the last line)
                 if (vc == V_TOT - 1) begin
                     lreq_line <= 10'd0;
                     lreq_tgl  <= ~lreq_tgl;
@@ -129,7 +129,7 @@ module video (
     end
 
     // =====================================================================
-    // Cruce pix -> sys
+    // pix -> sys crossing
     // =====================================================================
     reg [2:0] lreq_s, vbl_s;
     always @(posedge clk) begin
@@ -140,7 +140,7 @@ module video (
     wire vbl_ev  = vbl_s[2] ^ vbl_s[1];
 
     // =====================================================================
-    // Buffer de línea: 2 x 256 palabras (sys escribe, pix lee)
+    // Line buffer: 2 x 256 words (sys writes, pix reads)
     // =====================================================================
     reg [31:0] lbuf [0:511];
     reg        lb_we;
@@ -149,34 +149,34 @@ module video (
     always @(posedge clk) if (lb_we) lbuf[lb_wa] <= lb_wd;
 
     // =====================================================================
-    // DMA de líneas (sys)
+    // Line DMA (sys)
     // =====================================================================
     localparam D_IDLE = 3'd0, D_REQ = 3'd1, D_ROW = 3'd2, D_DATA = 3'd3, D_ROW2 = 3'd4;
     reg [2:0]  dst;
     reg [11:0] f_rsum;
-    reg        lpend;                   // petición de línea pendiente
+    reg        lpend;                   // line request pending
     reg [9:0]  lpend_line;
-    reg        f_half;                  // mitad del buffer (línea & 1)
+    reg        f_half;                  // buffer half (line & 1)
     reg [9:0]  f_line;
-    reg [10:0] f_row;                   // fila del lienzo de la línea
-    reg [22:0] f_rowaddr;               // base + fila*stride
-    reg [12:0] f_col;                   // columna (bytes) de la palabra siguiente
-    reg [7:0]  f_left;                  // palabras que faltan
-    reg [7:0]  f_widx;                  // índice de escritura en el buffer
-    reg [4:0]  f_burst;                 // palabras de la ráfaga en curso
-    reg [1:0]  f_fine [0:1];            // desplazamiento fino por mitad
-    reg        f_blank [0:1];           // línea en negro (pantalla desactivada)
+    reg [10:0] f_row;                   // canvas row for the line
+    reg [22:0] f_rowaddr;               // base + row*stride
+    reg [12:0] f_col;                   // column (bytes) of the next word
+    reg [7:0]  f_left;                  // remaining words
+    reg [7:0]  f_widx;                  // write index into the buffer
+    reg [4:0]  f_burst;                 // words in the current burst
+    reg [1:0]  f_fine [0:1];            // fine offset per half
+    reg        f_blank [0:1];           // blank line (display disabled)
     reg [7:0]  f_bcol [0:1];
 
-    // longitud de la ráfaga: hasta 16 palabras, sin cruzar 1 KB ni el wrap.
-    // Se calcula en dos ciclos: D_DATA alterna entre preparar (f_prep) y pedir.
-    reg  [12:0] wrap_m;                 // máscara del anillo (todo unos si no hay wrap)
-    reg  [12:0] wrap_b;                 // tamaño del anillo en bytes
+    // burst length: up to 16 words, without crossing 1 KB or the wrap point.
+    // Computed in two cycles: D_DATA alternates between preparing (f_prep) and requesting.
+    reg  [12:0] wrap_m;                 // ring mask (all ones if no wrap)
+    reg  [12:0] wrap_b;                 // ring size in bytes
     reg         f_prep;
-    reg  [22:0] wa_q;                   // dirección en bytes de la ráfaga
+    reg  [22:0] wa_q;                   // byte address of the burst
     reg  [12:0] colm_q;
-    reg  [8:0]  to_row_q;               // palabras hasta el límite de 1 KB (1..256)
-    reg  [10:0] to_wrap_q;              // palabras hasta el final del anillo
+    reg  [8:0]  to_row_q;               // words up to the 1 KB boundary (1..256)
+    reg  [10:0] to_wrap_q;              // words up to the end of the ring
     wire [12:0] col_m   = f_col & wrap_m;
     wire [22:0] wa_byte = f_rowaddr + {10'd0, col_m};
     reg  [4:0]  blen;
@@ -200,7 +200,7 @@ module video (
             c_en <= 1'b0;
             cur_line <= 10'd0; in_vblank <= 1'b0; frames <= 12'd0;
         end else begin
-            // -------------------------------------------- escritura de registros
+            // -------------------------------------------- register writes
             if (sel & we) begin
                 case (a[5:2])
                 4'h0: begin r_en <= wd[0]; r_live <= wd[1]; r_hdmi <= wd[2]; end
@@ -223,7 +223,7 @@ module video (
                 frames     <= frames + 12'd1;
             end
 
-            // -------------------------------------------- nueva línea
+            // -------------------------------------------- new line
             if (lreq_ev) begin
                 cur_line <= lreq_line;
                 if (lreq_line == r_raster) irq_raster <= 1'b1;
@@ -235,7 +235,7 @@ module video (
             case (dst)
             D_IDLE: if (lpend) begin
                 lpend <= 1'b0;
-                // copiar registros: al empezar el cuadro, o en cada línea en modo LIVE
+                // latch registers: at frame start, or on every line in LIVE mode
                 if (lpend_line == 10'd0 || r_live) begin
                     c_en <= r_en; c_base <= r_base; c_stride <= r_stride;
                     c_sx <= r_sx; c_sy <= r_sy; c_ww <= r_ww; c_wh <= r_wh;
@@ -248,8 +248,8 @@ module video (
                 dst    <= D_REQ;
             end
             D_REQ: begin
-                // fila del lienzo para esta línea (registros c_* ya copiados)
-                // fila = (SCROLL_Y + línea) mod WRAP_H, en dos pasos (D_REQ y D_ROW)
+                // canvas row for this line (c_* registers already latched)
+                // row = (SCROLL_Y + line) mod WRAP_H, in two steps (D_REQ and D_ROW)
                 f_rsum <= {1'b0, c_sy} + {2'd0, f_line};
                 f_col <= {c_sx[12:2], 2'b00};
                 f_fine[f_half]  <= c_sx[1:0];
@@ -270,20 +270,20 @@ module video (
                     f_row <= f_rsum[10:0];
                 dst <= D_ROW2;
             end
-            D_ROW2: dst <= D_DATA;          // espera a f_rowaddr (multiplicación)
+            D_ROW2: dst <= D_DATA;          // wait for f_rowaddr (multiplication)
             D_DATA: begin
                 if (f_burst == 5'd0 && !m_req) begin
                     if (f_left == 8'd0)
                         dst <= D_IDLE;
                     else if (f_prep) begin
-                        // ciclo 1: dirección y distancias a los límites
+                        // cycle 1: address and distances to the boundaries
                         wa_q      <= wa_byte;
                         colm_q    <= col_m;
                         to_row_q  <= 9'd256 - {1'b0, wa_byte[9:2]};
                         to_wrap_q <= (wrap_b - col_m) >> 2;
                         f_prep    <= 1'b0;
                     end else begin
-                        // ciclo 2: petición
+                        // cycle 2: request
                         m_req   <= 1'b1;
                         m_addr  <= wa_q[22:2];
                         m_len   <= blen - 5'd1;
@@ -307,12 +307,12 @@ module video (
         end
     end
 
-    // dirección de la fila (multiplicación incremental evitada: DSP)
+    // row address (incremental multiplication avoided: DSP)
     always @(posedge clk) f_rowaddr <= c_base + f_row * c_stride;
 
     always @(posedge clk) hdmi_mode <= r_hdmi;
 
-    // lectura de registros
+    // register reads
     always @(posedge clk) begin
         case (a[5:2])
         4'h0: rd <= {29'd0, r_hdmi, r_live, r_en};
@@ -331,7 +331,7 @@ module video (
     end
 
     // =====================================================================
-    // Paleta: 256 x 24 (sys escribe, pix lee)
+    // Palette: 256 x 24 (sys writes, pix reads)
     // =====================================================================
     reg [23:0] pal [0:255];
     integer pi;
@@ -339,13 +339,13 @@ module video (
     always @(posedge clk) if (pal_sel & we) pal[pal_a] <= wd[23:0];
 
     // =====================================================================
-    // Salida de píxeles (pix)
-    //   etapa 0: hc/vc -> dirección del buffer de línea
-    //   etapa 1: palabra leída -> byte
-    //   etapa 2: paleta -> RGB
+    // Pixel output (pix)
+    //   stage 0: hc/vc -> line buffer address
+    //   stage 1: word read -> byte
+    //   stage 2: palette -> RGB
     // =====================================================================
-    // las variables f_fine/f_blank de la mitad que se muestra son estables
-    // durante toda la línea (se escribieron una línea antes)
+    // the f_fine/f_blank variables of the half being displayed are stable
+    // for the whole line (they were written one line earlier)
     wire        vis  = (hc < H_VIS) && (vc < V_VIS);
     wire        half = vc[0];
     wire [9:0]  bidx = hc + {8'd0, f_fine[half]};

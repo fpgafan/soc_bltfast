@@ -1,23 +1,23 @@
 // ============================================================================
-// icache.v - Caché de instrucciones, mapeo directo, líneas de 32 bytes
-//   Datos: (2^IDXW) x 8 palabras en BSRAM (SDP), etiquetas en otra BSRAM.
-//   Lectura: la dirección se captura cuando en = 1; rdata/hit corresponden a
-//   la última dirección capturada (se mantienen con en = 0).
-//   Escritura (unidad de memoria): palabras de relleno y etiquetas.
-//   Etiqueta = {addr[30], addr[22:13]} (ROM / SDRAM de 8 MB) + bit de validez.
+// icache.v - Instruction cache, direct-mapped, 32-byte lines
+//   Data: (2^IDXW) x 8 words in BSRAM (SDP), tags in another BSRAM.
+//   Read: the address is latched when en = 1; rdata/hit correspond to
+//   the last latched address (held while en = 0).
+//   Write (memory unit): refill words and tags.
+//   Tag = {addr[30], addr[22:13]} (ROM / 8 MB SDRAM) + valid bit.
 // ============================================================================
 `default_nettype none
 module icache #(
-    parameter IDXW = 8                  // 256 líneas = 8 KB
+    parameter IDXW = 8                  // 256 lines = 8 KB
 )(
     input  wire        clk,
     input  wire        en,
     input  wire [31:0] addr,
     output wire [31:0] rdata,
     output wire        hit,
-    // escritura
+    // write
     input  wire        dwe,
-    input  wire [IDXW+2:0] dwidx,       // índice de palabra
+    input  wire [IDXW+2:0] dwidx,       // word index
     input  wire [31:0] dwdata,
     input  wire        twe,
     input  wire [IDXW-1:0] twidx,
@@ -29,7 +29,7 @@ module icache #(
     reg [11:0] tmem [0:(1<<IDXW)-1];
     reg [31:0] dq;
     reg [11:0] tq;
-    reg [11:0] ra_tag;                  // {1, tag} de la dirección capturada
+    reg [11:0] ra_tag;                  // {1, tag} of the latched address
 
     integer i;
     initial for (i = 0; i < (1<<IDXW); i = i + 1) tmem[i] = 12'd0;

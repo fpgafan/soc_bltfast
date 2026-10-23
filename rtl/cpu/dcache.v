@@ -1,23 +1,23 @@
 // ============================================================================
-// dcache.v - Caché de datos, mapeo directo, líneas de 32 bytes, escritura
-// directa sin reserva (write-through, no-allocate).
-//   Lectura: dirección desde E (capturada cada ciclo), dato/acierto en M.
-//   Escritura de datos: store con aciertos (máscara de bytes) o relleno.
-//   4 BSRAM de 8 bits (una por byte) + 1 BSRAM de etiquetas.
+// dcache.v - Data cache, direct-mapped, 32-byte lines, write-through
+// with no write-allocate (write-through, no-allocate).
+//   Read: address from E (latched every cycle), data/hit in M.
+//   Data write: store on hit (byte mask) or refill.
+//   4 8-bit BSRAMs (one per byte) + 1 tag BSRAM.
 // ============================================================================
 `default_nettype none
 module dcache #(
-    parameter IDXW = 8                  // 256 líneas = 8 KB
+    parameter IDXW = 8                  // 256 lines = 8 KB
 )(
     input  wire        clk,
     input  wire [31:0] raddr,
     output wire [31:0] rdata,
     output wire        hit,
-    // escritura de datos (store o relleno)
+    // data write (store or refill)
     input  wire [3:0]  wbe,
     input  wire [IDXW+2:0] widx,
     input  wire [31:0] wdata,
-    // etiquetas
+    // tags
     input  wire        twe,
     input  wire [IDXW-1:0] twidx,
     input  wire [11:0] twdata

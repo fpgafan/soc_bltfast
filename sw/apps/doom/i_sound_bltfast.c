@@ -1,12 +1,12 @@
 // ============================================================================
-// i_sound_bltfast.c - Sonido de Doom con el motor de 32 voces
+// i_sound_bltfast.c - Doom sound with the 32-voice engine
 //
-//  Efectos: los lumps DMX (PCM de 8 bits sin signo, normalmente 11025 Hz) se
-//    convierten a 8 bits con signo en la zona de muestras la primera vez que
-//    suenan; cada canal de Doom (8) usa una voz fija, de la 24 a la 31.
-//  Música: MUS -> MIDI (mus2mid.c) y el reproductor MIDI de la biblioteca en
-//    las voces 0..23, actualizado desde la interrupción del temporizador
-//    (irq_timer en doomgeneric_bltfast.c).
+//  Effects: the DMX lumps (unsigned 8-bit PCM, usually 11025 Hz) are
+//    converted to signed 8 bits in the sample area the first time they
+//    play; each Doom channel (8) uses a fixed voice, 24 to 31.
+//  Music: MUS -> MIDI (mus2mid.c) and the library MIDI player on
+//    voices 0..23, updated from the timer interrupt
+//    (irq_timer in doomgeneric_bltfast.c).
 // ============================================================================
 #include <stdlib.h>
 #include <string.h>
@@ -23,12 +23,12 @@
 #include "audio.h"
 #undef printf
 
-// variables de configuración que definía i_sdlsound.c
+// configuration variables that i_sdlsound.c used to define
 int use_libsamplerate = 0;
 float libsamplerate_scale = 0.65f;
 
-#define NCH        (AUD_VOICES - MIDI_VOICES)   // 8 canales de efectos
-#define POOL_START 0x40740000u                  // tras los instrumentos MIDI (~160 KB)
+#define NCH        (AUD_VOICES - MIDI_VOICES)   // 8 effect channels
+#define POOL_START 0x40740000u                  // after the MIDI instruments (~160 KB)
 #define POOL_END   0x40800000u
 #define MAXSFX     160
 
@@ -43,7 +43,7 @@ static sample_t smp[MAXSFX];
 static sfxinfo_t *smp_owner[MAXSFX];
 static int nsmp;
 
-// ---------------------------------------------------------------- efectos
+// ---------------------------------------------------------------- effects
 static void flush_cache(void)
 {
     AUD_STOP = ((1u << NCH) - 1) << MIDI_VOICES;
@@ -69,7 +69,7 @@ static const sample_t *cache_sfx(sfxinfo_t *sfx)
     const byte *d = W_CacheLumpNum(lump, PU_STATIC);
     uint32_t rate = d[2] | (d[3] << 8);
     uint32_t n = d[4] | (d[5] << 8) | (d[6] << 16) | ((uint32_t)d[7] << 24);
-    // formato DMX: cabecera de 8 bytes; DMX ignora 16 muestras al principio y al final
+    // DMX format: 8-byte header; DMX skips 16 samples at the start and at the end
     if (len < 8 || d[0] != 3 || d[1] != 0 || n > (uint32_t)len - 8 || n <= 48) {
         W_ReleaseLumpNum(lump);
         return NULL;
@@ -89,7 +89,7 @@ static const sample_t *cache_sfx(sfxinfo_t *sfx)
 
 static void set_vol(int v, int vol, int sep)
 {
-    // vol 0..127, sep 0 (izquierda) .. 254 (derecha); 128 = ganancia 1
+    // vol 0..127, sep 0 (left) .. 254 (right); 128 = gain 1
     int l = vol * (254 - sep) / 127, r = vol * sep / 127;
     if (l > 255) l = 255;
     if (r > 255) r = 255;
@@ -151,8 +151,8 @@ sound_module_t DG_sound_module = {
     Snd_StartSound, Snd_StopSound, Snd_SoundIsPlaying, Snd_CacheSounds,
 };
 
-// ---------------------------------------------------------------- música
-// midi_update() se llama desde irq_timer (doomgeneric_bltfast.c, 500 Hz)
+// ---------------------------------------------------------------- music
+// midi_update() is called from irq_timer (doomgeneric_bltfast.c, 500 Hz)
 
 typedef struct { uint8_t *data; uint32_t len; } song_t;
 static song_t *current;
@@ -194,7 +194,7 @@ static void *Mus_RegisterSong(void *data, int len)
         if (s->data) memcpy(s->data, buf, n);
         s->len = (uint32_t)n;
         mem_fclose(in); mem_fclose(out);
-    } else {                                       // MIDI tal cual (PWAD modernos)
+    } else {                                       // plain MIDI (modern PWADs)
         s->data = malloc((size_t)len);
         if (s->data) memcpy(s->data, data, (size_t)len);
         s->len = (uint32_t)len;

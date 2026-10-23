@@ -1,5 +1,5 @@
-// Tang Nano 20K (GW2AR-LV18QN88C8/I7) - restricciones físicas
-// La SDRAM embebida (O_sdram_*, IO_sdram_dq) no lleva restricciones.
+// Tang Nano 20K (GW2AR-LV18QN88C8/I7) - physical constraints
+// The embedded SDRAM (O_sdram_*, IO_sdram_dq) needs no constraints.
 IO_LOC  "clk_27m" 4;
 IO_PORT "clk_27m" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 
@@ -36,7 +36,7 @@ IO_PORT "tmds_d_p[1]" PULL_MODE=NONE DRIVE=8;
 IO_LOC  "tmds_d_p[2]" 39,40;
 IO_PORT "tmds_d_p[2]" PULL_MODE=NONE DRIVE=8;
 
-// Audio de la placa: DAC I2S + amplificador
+// On-board audio: I2S DAC + amplifier
 IO_LOC  "i2s_bclk" 56;
 IO_PORT "i2s_bclk" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
 IO_LOC  "i2s_lrck" 55;
@@ -46,7 +46,7 @@ IO_PORT "i2s_data" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
 IO_LOC  "pa_en" 51;
 IO_PORT "pa_en" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
 
-// Tarjeta microSD (modo SPI)
+// microSD card (SPI mode)
 IO_LOC  "sd_clk" 83;
 IO_PORT "sd_clk" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
 IO_LOC  "sd_cmd" 82;
@@ -56,7 +56,7 @@ IO_PORT "sd_dat0" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 IO_LOC  "sd_dat3" 81;
 IO_PORT "sd_dat3" IO_TYPE=LVCMOS33 PULL_MODE=UP DRIVE=8;
 
-// Mandos SNES/NES (pines del conector, como en nestang)
+// SNES/NES pads (connector pins, as in nestang)
 IO_LOC  "pad_latch[0]" 28;
 IO_PORT "pad_latch[0]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
 IO_LOC  "pad_clk[0]" 27;
@@ -70,7 +70,7 @@ IO_PORT "pad_clk[1]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
 IO_LOC  "pad_data[1]" 30;
 IO_PORT "pad_data[1]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 
-// Teclado PS/2 (necesita adaptación a 5 V)
+// PS/2 keyboard (needs 5 V level shifting)
 IO_LOC  "ps2_clk" 41;
 IO_PORT "ps2_clk" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 IO_LOC  "ps2_data" 42;

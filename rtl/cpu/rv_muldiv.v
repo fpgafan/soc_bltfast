@@ -1,11 +1,11 @@
 // ============================================================================
-// rv_muldiv.v - Extensión M
-//   MUL/MULH/MULHSU/MULHU : 4 ciclos en E (operandos -> 4 productos parciales
-//                           17x17 en DSP -> suma -> resultado), segmentado
-//   DIV/DIVU/REM/REMU     : radix-2 con restauración, salta los bytes a cero
-//                           iniciales del dividendo (de 12 a 38 ciclos)
-// 'start' se mantiene mientras la instrucción está en E; se acepta en IDLE.
-// 'done' dura un ciclo y 'res' es válido en ese ciclo.
+// rv_muldiv.v - M extension
+//   MUL/MULH/MULHSU/MULHU : 4 cycles in E (operands -> 4 partial products
+//                           17x17 in DSP -> sum -> result), pipelined
+//   DIV/DIVU/REM/REMU     : restoring radix-2, skips the leading zero
+//                           bytes of the dividend (12 to 38 cycles)
+// 'start' is held while the instruction is in E; it is accepted in IDLE.
+// 'done' lasts one cycle and 'res' is valid in that cycle.
 // ============================================================================
 `default_nettype none
 module rv_muldiv (
@@ -23,9 +23,9 @@ module rv_muldiv (
                S_DIV = 4'd4, S_DFIN = 4'd5, S_DONE = 4'd6, S_DSKIP = 4'd7, S_DABS = 4'd8;
     reg [3:0] st;
 
-    // ---------------------------------------------------------------- multiplicación
-    reg               mhi;                        // devolver la parte alta
-    reg signed [16:0] ah, bh, al, bl;             // al/bl con bit 16 = 0
+    // ---------------------------------------------------------------- multiplication
+    reg               mhi;                        // return the high part
+    reg signed [16:0] ah, bh, al, bl;             // al/bl with bit 16 = 0
     reg signed [33:0] p_hh, p_hl, p_lh, p_ll;
     reg        [65:0] prod;
 
@@ -34,16 +34,16 @@ module rv_muldiv (
     wire [32:0] a33 = {a_sgn & a[31], a};
     wire [32:0] b33 = {b_sgn & b[31], b};
 
-    // ---------------------------------------------------------------- división
-    reg  [31:0] dq, dr, dd;            // cociente / resto parcial / divisor (abs)
-    reg  [31:0] dn;                    // dividendo desplazado
+    // ---------------------------------------------------------------- division
+    reg  [31:0] dq, dr, dd;            // quotient / partial remainder / divisor (abs)
+    reg  [31:0] dn;                    // shifted dividend
     reg  [5:0]  dcnt;
     reg         neg_q, neg_r, want_rem, div0;
     reg  [31:0] a_orig;
     reg  [31:0] dres;
 
     wire div_signed = ~op[0];
-    reg         dsg;                    // división con signo
+    reg         dsg;                    // signed division
     reg  [31:0] da_raw, db_raw;
 
     wire [32:0] trial = {dr[31:0], dn[31]} - {1'b0, dd};
@@ -74,12 +74,12 @@ module rv_muldiv (
                     st       <= S_DABS;
                 end
             end
-            S_DABS: begin                     // valores absolutos
+            S_DABS: begin                     // absolute values
                 dn <= (dsg & da_raw[31]) ? -da_raw : da_raw;
                 dd <= (dsg & db_raw[31]) ? -db_raw : db_raw;
                 st <= S_DSKIP;
             end
-            S_DSKIP: begin                    // salta bytes iniciales a cero
+            S_DSKIP: begin                    // skip leading zero bytes
                 if (dn[31:24] == 8'd0 && dcnt > 6'd8) begin
                     dn   <= {dn[23:0], 8'd0};
                     dcnt <= dcnt - 6'd8;

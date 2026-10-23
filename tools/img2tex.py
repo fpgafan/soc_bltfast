@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-img2tex.py - Convierte una imagen (PNG, BMP...) a textura de 8 bpp para el blitter.
+img2tex.py - Converts an image (PNG, BMP...) into an 8 bpp texture for the blitter.
 
-  python img2tex.py imagen.png salida [--pal default|own] [--key R,G,B] [--c nombre]
+  python img2tex.py image.png output [--pal default|own] [--key R,G,B] [--c name]
 
-  --pal default : usa la paleta por defecto de gfx_palette_default() (color más cercano)
-  --pal own     : cuantiza a 255 colores propios y escribe salida.pal (256 x 0x00RRGGBB)
-  --key R,G,B   : ese color (o la transparencia alfa < 128) se convierte en el índice 0
-  --c nombre    : genera salida.c con arrays C en lugar de .bin
-Formato .bin: 4 bytes ancho, 4 bytes alto, ancho*alto índices.
+  --pal default : uses the gfx_palette_default() palette (nearest color)
+  --pal own     : quantizes to 255 custom colors and writes output.pal (256 x 0x00RRGGBB)
+  --key R,G,B   : that color (or alpha transparency < 128) becomes index 0
+  --c name      : generates output.c with C arrays instead of .bin
+.bin format: 4 bytes width, 4 bytes height, width*height indices.
 """
 import sys, struct, argparse
 from PIL import Image

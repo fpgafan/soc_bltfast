@@ -1,9 +1,9 @@
 // ============================================================================
-// i2s_tx.v - Salida I2S estéreo 16 bits a 48 kHz (dominio pix, 25,2 MHz)
-//   Cada trama dura 525 ciclos de píxel = 64 periodos de BCLK (3,072 MHz de
-//   media; los semiperiodos se reparten en 4 y 5 ciclos con Bresenham).
-//   LRCK = 0: canal izquierdo; el MSB sale un BCLK después del cambio de
-//   LRCK (formato I2S), 32 BCLK por canal. 'frame' inicia una trama con l/r.
+// i2s_tx.v - 16-bit stereo I2S output at 48 kHz (pix domain, 25.2 MHz)
+//   Each frame lasts 525 pixel cycles = 64 BCLK periods (3.072 MHz on
+//   average; half-periods are split into 4 and 5 cycles with Bresenham).
+//   LRCK = 0: left channel; the MSB goes out one BCLK after the LRCK
+//   change (I2S format), 32 BCLK per channel. 'frame' starts a frame with l/r.
 // ============================================================================
 `default_nettype none
 module i2s_tx (
@@ -18,7 +18,7 @@ module i2s_tx (
 );
     reg [9:0]  pos;
     reg [9:0]  acc;
-    reg [6:0]  half;                    // semiperiodo de BCLK (0..127)
+    reg [6:0]  half;                    // BCLK half-period (0..127)
     reg [63:0] sh;
     wire [9:0] acc_n = acc + 10'd128;
     always @(posedge clk) begin
@@ -31,7 +31,7 @@ module i2s_tx (
             half <= 7'd0;
             bclk <= 1'b0;
             lrck <= 1'b0;
-            sdata <= 1'b0;                          // bit de retardo I2S
+            sdata <= 1'b0;                          // I2S delay bit
             sh   <= {l, 16'd0, r, 16'd0};
         end else if (pos != 10'd524) begin
             pos <= pos + 10'd1;
@@ -40,8 +40,8 @@ module i2s_tx (
                 half <= half + 7'd1;
                 bclk <= ~bclk;
                 if (bclk) begin
-                    // flanco de bajada: el receptor muestrea en el de subida
-                    // el bit periodo k (k = half/2 + 1) del canal en curso
+                    // falling edge: the receiver samples on the rising one
+                    // the bit for period k (k = half/2 + 1) of the current channel
                     sdata <= sh[63];
                     sh    <= {sh[62:0], 1'b0};
                     lrck  <= (half[6:1] >= 6'd31) && (half[6:1] != 6'd63);

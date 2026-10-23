@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""pyiss.py - Simulador de referencia RV32IM (modo máquina mínimo) para pruebas
-diferenciales. Memoria: SDRAM de 8 MB visible en 0x4xxx_xxxx y 0x5xxx_xxxx
-(alias), escrituras de E/S ignoradas salvo tohost (0x8000_0F00)."""
+"""pyiss.py - RV32IM reference simulator (minimal machine mode) for differential
+testing. Memory: 8 MB SDRAM visible at 0x4xxx_xxxx and 0x5xxx_xxxx
+(alias), I/O writes ignored except tohost (0x8000_0F00)."""
 import struct
 
 M32 = 0xFFFFFFFF
@@ -104,9 +104,9 @@ class ISS:
             pass
         elif op == 0x73:
             if f3 != 0:
-                res = 0          # CSR: el generador no los usa salvo lecturas que se ignoran
+                res = 0          # CSR: the generator does not use them except for reads that are ignored
         else:
-            raise RuntimeError(f"instrucción no soportada {i:08x} en {pc:08x}")
+            raise RuntimeError(f"unsupported instruction {i:08x} at {pc:08x}")
         if res is not None and rd:
             self.x[rd] = res & M32
         self.pc = npc

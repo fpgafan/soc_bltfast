@@ -2,7 +2,7 @@ OUTPUT_ARCH(riscv)
 ENTRY(_start)
 MEMORY {
   ROM  (rx)  : ORIGIN = 0x00000000, LENGTH = 8K
-  BRAM (rw)  : ORIGIN = 0x10000000, LENGTH = 3K      /* el último KB es pila */
+  BRAM (rw)  : ORIGIN = 0x10000000, LENGTH = 3K      /* the last KB is stack */
 }
 SECTIONS {
   .text : { *(.text.start) *(.text*) *(.rodata*) *(.srodata*) } > ROM

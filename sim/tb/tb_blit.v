@@ -1,8 +1,8 @@
 // ============================================================================
-// tb_blit.v - blitter + sdram_ctrl + modelo de SDRAM, dirigido por fichero
-//   +cmds=<f>  líneas: "W <off> <dato>" (registro), "I" (esperar a que acabe)
-//   +init=<f>  contenido inicial de la SDRAM ; +dump=<f> volcado final (1 MB)
-//   +vid       genera tráfico de vídeo en el maestro 0 (prioridad mayor)
+// tb_blit.v - blitter + sdram_ctrl + SDRAM model, driven by a file
+//   +cmds=<f>  lines: "W <off> <data>" (register), "I" (wait until done)
+//   +init=<f>  initial SDRAM contents ; +dump=<f> final dump (1 MB)
+//   +vid       generates video traffic on master 0 (higher priority)
 // ============================================================================
 `timescale 1ns/1ps
 module tb_blit;
@@ -30,7 +30,7 @@ module tb_blit;
         .m_rdata(rdata), .m_rvalid(b_rvalid)
     );
 
-    // ---------------------------------------------------------------- tráfico de vídeo
+    // ---------------------------------------------------------------- video traffic
     reg         v_req = 0;
     reg  [22:2] v_addr = 0;
     reg         vid_on = 0;
@@ -67,7 +67,7 @@ module tb_blit;
         .we_n(sd_we_n), .ba(sd_ba), .a(sd_a), .dqm(sd_dqm), .dq(sd_dq)
     );
 
-    // ---------------------------------------------------------------- comandos
+    // ---------------------------------------------------------------- commands
     task wr(input [5:0] off, input [31:0] d);
         begin
             @(posedge clk); sel <= 1; we <= 1; a <= off; wd <= d;
@@ -119,7 +119,7 @@ module tb_blit;
             repeat (20) @(posedge clk);
             rdreg(6'h00, st);
         end
-        $display("BLIT: %0d comandos en %0d ciclos, terminados=%0d, errores SDRAM=%0d",
+        $display("BLIT: %0d commands in %0d cycles, done=%0d, SDRAM errors=%0d",
                  ncmd, ($time - t0) / 10, st[31:16], u_mem.errors);
         $writememh(fdump, u_mem.mem, 0, 262143);
         $finish;

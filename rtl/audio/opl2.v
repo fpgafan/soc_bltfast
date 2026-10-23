@@ -1,18 +1,18 @@
 // ============================================================================
-// opl2.v - Sintetizador FM compatible con el OPL2 (YM3812 / AdLib)
+// opl2.v - FM synthesizer compatible with the OPL2 (YM3812 / AdLib)
 //
-//  9 canales de 2 operadores, ondas 0-3 (con WSE), vibrato y trémolo,
-//  KSL/KSR, realimentación, NTS y DAM/DVB. Bit a bit igual que Nuked-OPL3
-//  en modo OPL2 (modelo de referencia: sim/oplmodel.py). Sin modo de ritmo
-//  (bit 5 de 0xBD) ni temporizadores.
-//  Algoritmo y tablas de Nuked-OPL3 (nukeykt): LGPL 2.1, ver LICENSE.nuked-opl3.
-//  Calcula los 18 operadores uno tras otro (~22 ciclos cada uno) en cada
-//  'tick' (~49716 Hz, la frecuencia del chip original: 3,58 MHz / 72).
+//  9 two-operator channels, waveforms 0-3 (with WSE), vibrato and tremolo,
+//  KSL/KSR, feedback, NTS and DAM/DVB. Bit-exact with Nuked-OPL3
+//  in OPL2 mode (reference model: sim/oplmodel.py). No rhythm mode
+//  (bit 5 of 0xBD) and no timers.
+//  Algorithm and tables from Nuked-OPL3 (nukeykt): LGPL 2.1, see LICENSE.nuked-opl3.
+//  Computes the 18 operators one after another (~22 cycles each) on every
+//  'tick' (~49716 Hz, the original chip's rate: 3.58 MHz / 72).
 //
-//  Registros (base 0x8000_9000):
-//    +0x000..0x3FC  W  registro OPL n en +n*4 (como el puerto 0x388/0x389)
-//    +0x400         RW [7:0] ganancia de salida (0x40 = 1.0, por defecto 0x80)
-//    +0x404         R  muestras generadas
+//  Registers (base 0x8000_9000):
+//    +0x000..0x3FC  W  OPL register n at +n*4 (like ports 0x388/0x389)
+//    +0x400         RW [7:0] output gain (0x40 = 1.0, default 0x80)
+//    +0x404         R  samples generated
 // ============================================================================
 `default_nettype none
 module opl2 (
@@ -28,19 +28,19 @@ module opl2 (
     output reg         smp_valid
 );
     // =====================================================================
-    // Registros OPL: RAM de 256 bytes (CPU escribe, motor lee)
+    // OPL registers: 256-byte RAM (CPU writes, engine reads)
     // =====================================================================
     reg  [7:0] regs [0:255];
     reg  [7:0] ra, rq;
     wire       wr_reg = sel && we && !a[10];
-    reg        clr;                        // borrado tras el reset
+    reg        clr;                        // clear after reset
     reg  [7:0] clr_a;
     always @(posedge clk) begin
         if (clr) regs[clr_a] <= 8'd0;
         else if (wr_reg) regs[a[9:2]] <= wd[7:0];
         rq <= regs[ra];
     end
-    // copias de los registros globales
+    // copies of the global registers
     reg wse, nts, dam, dvb;
     reg [7:0]  gain;
     reg [31:0] count;
@@ -58,7 +58,7 @@ module opl2 (
     end
 
     // =====================================================================
-    // Estado de los 18 operadores
+    // State of the 18 operators
     // =====================================================================
     reg        [18:0] st_ph    [0:31];
     reg        [8:0]  st_rout  [0:31];
@@ -67,7 +67,7 @@ module opl2 (
     reg signed [12:0] st_prout [0:31];
 
     // =====================================================================
-    // Tablas
+    // Tables
     // =====================================================================
     function [11:0] logsin(input [7:0] i);
         case (i)
@@ -225,16 +225,16 @@ module opl2 (
     endfunction
 
     // =====================================================================
-    // Motor
+    // Engine
     // =====================================================================
     localparam S_CLR = 5'd0, S_IDLE = 5'd1, S_RD = 5'd2, S_E1 = 5'd3, S_E2 = 5'd4,
                S_E3 = 5'd5, S_E4 = 5'd6, S_E5 = 5'd7, S_P1 = 5'd8, S_P2 = 5'd9,
                S_W1 = 5'd10, S_W2 = 5'd11, S_W3 = 5'd12, S_W4 = 5'd13, S_WB = 5'd14,
                S_F1 = 5'd15, S_F2 = 5'd16, S_F3 = 5'd17;
     reg [4:0]  st;
-    reg [4:0]  s;                          // operador 0..17
-    reg [3:0]  k;                          // lectura de registros
-    // operador s -> desplazamiento de registro, canal y papel (0 mod., 1 portadora)
+    reg [4:0]  s;                          // operator 0..17
+    reg [3:0]  k;                          // register read
+    // operator s -> register offset, channel and role (0 modulator, 1 carrier)
     wire [4:0] s_off = s + {s >= 5'd12, s >= 5'd6 && s < 5'd12, 1'b0} ;
     wire [2:0] s6    = s >= 5'd12 ? s - 5'd12 : s >= 5'd6 ? s - 5'd6 : s;   // s % 6
     wire [3:0] s_ch  = (s >= 5'd12 ? 4'd6 : s >= 5'd6 ? 4'd3 : 4'd0) + (s6 >= 3'd3 ? s6 - 3'd3 : s6);
@@ -265,12 +265,12 @@ module opl2 (
     wire [4:0] sl = (r80[7:4] == 4'hF) ? 5'h1F : {1'b0, r80[7:4]};
     wire [1:0] wf = wse ? rE0[1:0] : 2'd0;
 
-    // estado del operador en curso
+    // current operator state
     reg        [18:0] cur_ph;
     reg        [8:0]  cur_rout;
     reg        [1:0]  cur_gen;
     reg signed [12:0] cur_out, cur_prout, modout;
-    // envolvente
+    // envelope
     reg signed [9:0]  ksl_raw;
     reg        [7:0]  eg_ksl;
     reg        [3:0]  ksv, ks;
@@ -283,21 +283,21 @@ module opl2 (
     reg        [1:0]  shift;
     reg        [8:0]  new_rout;
     reg        [1:0]  new_gen;
-    // realimentación
+    // feedback
     reg signed [13:0] fbsum;
     reg signed [11:0] fbmod;
-    // fase
+    // phase
     reg        [10:0] f_vib;
     reg        [16:0] basefreq;
     reg        [9:0]  phase_out, phsum;
     reg        [18:0] new_ph;
-    // onda
+    // waveform
     reg               w_neg, w_max;
     reg        [11:0] ls_q;
     reg        [12:0] lvl;
     reg        [10:0] ex_q;
     reg signed [12:0] new_out;
-    // mezcla y LFO
+    // mix and LFO
     reg signed [17:0] mix;
     reg signed [25:0] mixg;
     reg        [15:0] timer;
@@ -309,7 +309,7 @@ module opl2 (
     reg        [3:0]  eg_add;
     reg        [1:0]  eg_timer_lo;
 
-    // incremento escalonado de las velocidades altas (eg_incstep)
+    // stepped increment of the high rates (eg_incstep)
     function incstep(input [1:0] lo, input [1:0] t);
         case (lo)
         2'd0: incstep = 1'b0;
@@ -322,14 +322,14 @@ module opl2 (
     wire [6:0] rate     = {3'd0, ks} + {1'b0, reg_rate, 2'b00};
     wire [4:0] eg_shift = {1'b0, rate_hi} + {1'b0, eg_add};
     wire [2:0] sh_hi    = {1'b0, rate_hi[1:0]} + {2'd0, incstep(rate_lo, eg_timer_lo)};
-    // incremento en el ataque: ~rout >> (4 - shift), con signo
+    // attack increment: ~rout >> (4 - shift), signed
     wire signed [10:0] att_n   = ~{2'b00, cur_rout};
     wire signed [10:0] att_inc = att_n >>> (3'd4 - {1'b0, shift});
     // vibrato
     wire [2:0] vrng0 = fnum[9:7];
     wire [2:0] vrng1 = (vibpos[1:0] == 2'd0) ? 3'd0 : vibpos[0] ? {1'b0, vrng0[2:1]} : vrng0;
     wire [2:0] vrng  = dvb ? vrng1 : {1'b0, vrng1[2:1]};
-    // onda: índice en la tabla logsin
+    // waveform: index into the logsin table
     wire [7:0] ls_idx = phsum[8] ? ~phsum[7:0] : phsum[7:0];
     wire [14:0] lvl_sum = (w_max ? 15'h1000 : {3'b000, ls_q}) + {1'b0, eg_out, 3'b000};
     wire [11:0] ex_val  = {ex_q, 1'b0} >> lvl[12:8];
@@ -343,7 +343,7 @@ module opl2 (
             eg_timer <= 13'd0; eg_state <= 1'b0; eg_add <= 4'd0; eg_timer_lo <= 2'd0;
             count <= 32'd0; smp <= 16'sd0;
         end else case (st)
-        // ---------------------------------------------------------------- borrado
+        // ---------------------------------------------------------------- clear
         S_CLR: begin
             clr_a <= clr_a + 8'd1;
             if (clr_a < 8'd32) begin
@@ -356,7 +356,7 @@ module opl2 (
             s <= 5'd0; k <= 4'd0; mix <= 18'sd0;
             st <= S_RD;
         end
-        // ---------------------------------------------------------------- registros
+        // ---------------------------------------------------------------- registers
         S_RD: begin
             k <= k + 4'd1;
             case (k)
@@ -371,7 +371,7 @@ module opl2 (
             default: ;
             endcase
         end
-        // ---------------------------------------------------------------- envolvente
+        // ---------------------------------------------------------------- envelope
         S_E1: begin
             cur_ph    <= st_ph[s];
             cur_rout  <= st_rout[s];
@@ -445,7 +445,7 @@ module opl2 (
             else     f_vib <= {1'b0, fnum};
             st <= S_P1;
         end
-        // ---------------------------------------------------------------- fase
+        // ---------------------------------------------------------------- phase
         S_P1: begin
             basefreq  <= ({7'd0, f_vib} << block) >> 1;
             phase_out <= cur_ph[18:9];
@@ -460,7 +460,7 @@ module opl2 (
             phsum  <= phase_out + m;
             st <= S_W1;
         end
-        // ---------------------------------------------------------------- onda
+        // ---------------------------------------------------------------- waveform
         S_W1: begin
             case (wf)
             2'd0: begin w_neg <= phsum[9]; w_max <= 1'b0; end
@@ -493,7 +493,7 @@ module opl2 (
             if (s == 5'd17) st <= S_F1;
             else begin s <= s + 5'd1; k <= 4'd0; st <= S_RD; end
         end
-        // ---------------------------------------------------------------- muestra y LFO
+        // ---------------------------------------------------------------- sample and LFO
         S_F1: begin
             mixg <= mix * $signed({1'b0, gain});
             if (timer[5:0] == 6'h3F) tpos <= (tpos == 8'd209) ? 8'd0 : tpos + 8'd1;

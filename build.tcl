@@ -1,4 +1,4 @@
-# Síntesis + PnR con Gowin EDA:  gw_sh build.tcl   (desde la raíz del proyecto)
+# Synthesis + PnR with Gowin EDA:  gw_sh build.tcl   (from the project root)
 set_device -name GW2AR-18C GW2AR-LV18QN88C8/I7
 foreach f [glob rtl/*.v rtl/cpu/*.v rtl/mem/*.v rtl/periph/*.v rtl/video/*.v rtl/audio/*.v] { add_file $f }
 add_file constraints/tang20k.cst

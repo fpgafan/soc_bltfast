@@ -1,15 +1,15 @@
 // ============================================================================
-// hdmi_tx.v - Transmisor HDMI (640x480@60, 25,2 MHz) con audio PCM 48 kHz
+// hdmi_tx.v - HDMI transmitter (640x480@60, 25.2 MHz) with 48 kHz PCM audio
 //
-//   - Codificación TMDS 8b/10b de vídeo, tokens de control, TERC4
-//   - Preámbulos y bandas de guarda de vídeo y de data islands
-//   - Un data island por línea (2 paquetes) en el borrado horizontal:
-//       paquete 0: muestras de audio (o nulo si no hay)
-//       paquete 1: rota entre ACR (N = 6144, CTS = 25200), AVI InfoFrame,
-//                  ACR y Audio InfoFrame
-//   - ECC BCH(64,56)/(32,24) calculado al vuelo mientras se transmite
-//   - Serialización 10:1 con OSER10 (FCLK = 126 MHz) y salidas ELVDS
-//   hdmi_en = 0: salida DVI pura (sin islands ni preámbulos de island)
+//   - TMDS 8b/10b video coding, control tokens, TERC4
+//   - Preambles and guard bands for video and data islands
+//   - One data island per line (2 packets) in the horizontal blanking:
+//       packet 0: audio samples (or null if none)
+//       packet 1: rotates between ACR (N = 6144, CTS = 25200), AVI InfoFrame,
+//                 ACR and Audio InfoFrame
+//   - BCH(64,56)/(32,24) ECC computed on the fly while transmitting
+//   - 10:1 serialization with OSER10 (FCLK = 126 MHz) and ELVDS outputs
+//   hdmi_en = 0: plain DVI output (no islands or island preambles)
 // ============================================================================
 `default_nettype none
 module hdmi_tx (
@@ -17,58 +17,58 @@ module hdmi_tx (
     input  wire        clk_ser,
     input  wire        rst,
     input  wire        hdmi_en,
-    // vídeo (alineado con hc/vc)
+    // video (aligned with hc/vc)
     input  wire [23:0] rgb,
     input  wire        de,
-    input  wire        hsync,           // polaridad de línea (activo bajo en 640x480)
+    input  wire        hsync,           // line polarity (active low in 640x480)
     input  wire        vsync,
     input  wire [9:0]  hc,
     input  wire [9:0]  vc,
-    // audio (dominio pix)
+    // audio (pix domain)
     input  wire        aud_we,
     input  wire [15:0] aud_l,
     input  wire [15:0] aud_r,
-    // salida
+    // output
     output wire        tmds_clk_p, tmds_clk_n,
     output wire [2:0]  tmds_d_p,   tmds_d_n,
-    // depuración / prueba
+    // debug / test
     output wire [29:0] tmds_word
 );
     localparam W = 640, H = 480, FW = 800, FH = 525;
     localparam NPK = 2;
     localparam DI_PRE = W + 4, DI_GL = W + 12, DI_ST = W + 14, DI_END = W + 14 + NPK * 32;
 
-    // ---------------------------------------------------------------- FIFO de audio
+    // ---------------------------------------------------------------- audio FIFO
     reg [31:0] af [0:7];
     reg [2:0]  af_wp, af_rp;
     reg [3:0]  af_n;
     wire       af_pop;
-    wire [2:0] af_take;              // muestras a sacar en este paquete (0..2)
+    wire [2:0] af_take;              // samples to take in this packet (0..2)
 
-    // ---------------------------------------------------------------- posición
-    reg [4:0]  pcnt;                 // píxel dentro del paquete
-    reg        pidx;                 // paquete 0/1
+    // ---------------------------------------------------------------- position
+    reg [4:0]  pcnt;                 // pixel within the packet
+    reg        pidx;                 // packet 0/1
     wire in_di_pre  = hdmi_en && hc >= DI_PRE && hc < DI_GL;
     wire in_di_gd   = hdmi_en && ((hc >= DI_GL && hc < DI_ST) || (hc >= DI_END && hc < DI_END + 2));
     wire in_di      = hdmi_en && hc >= DI_ST && hc < DI_END;
-    wire next_vis   = (vc < H - 1) || (vc == FH - 1);   // la línea siguiente tiene vídeo
+    wire next_vis   = (vc < H - 1) || (vc == FH - 1);   // the next line has video
     wire in_vid_pre = next_vis && hc >= FW - 10 && hc < FW - 2;
     wire in_vid_gd  = hdmi_en && next_vis && hc >= FW - 2;
 
-    // ---------------------------------------------------------------- paquetes
+    // ---------------------------------------------------------------- packets
     reg [55:0] sp00, sp01, sp02, sp03, sp10, sp11, sp12, sp13;
     reg [23:0] hd0, hd1;
 
-    reg [7:0]  frame_ctr;            // contador de tramas IEC 60958 (0..191)
-    reg [1:0]  rot;                  // rotación del paquete 1
+    reg [7:0]  frame_ctr;            // IEC 60958 frame counter (0..191)
+    reg [1:0]  rot;                  // packet 1 rotation
 
-    // channel status (consumidor, PCM, sin copyright, 48 kHz)
+    // channel status (consumer, PCM, no copyright, 48 kHz)
     function cs_bit(input [7:0] idx, input right);
         begin
             case (idx)
-            8'd2:  cs_bit = 1'b1;            // copyright no afirmado
-            8'd20: cs_bit = ~right;          // canal 1 (izquierdo)
-            8'd21: cs_bit = right;           // canal 2 (derecho)
+            8'd2:  cs_bit = 1'b1;            // copyright not asserted
+            8'd20: cs_bit = ~right;          // channel 1 (left)
+            8'd21: cs_bit = right;           // channel 2 (right)
             8'd25: cs_bit = 1'b1;            // 48 kHz = 0010
             default: cs_bit = 1'b0;
             endcase
@@ -89,12 +89,12 @@ module hdmi_tx (
         end
     endfunction
 
-    // InfoFrames (sumas de comprobación constantes)
-    // AVI v2, longitud 13: PB1 = 0x00 (RGB), PB2 = 0x18 (4:3, igual), PB3 = 0x08 (rango
-    // completo), PB4 = VIC 1
+    // InfoFrames (constant checksums)
+    // AVI v2, length 13: PB1 = 0x00 (RGB), PB2 = 0x18 (4:3, same), PB3 = 0x08 (full
+    // range), PB4 = VIC 1
     localparam [7:0] AVI_SUM = 8'h82 + 8'h02 + 8'h0D + 8'h00 + 8'h18 + 8'h08 + 8'h01;
     localparam [7:0] AVI_CK  = 8'h00 - AVI_SUM;
-    // Audio v1, longitud 10: PB1 = 0x01 (2 canales), resto 0
+    // Audio v1, length 10: PB1 = 0x01 (2 channels), rest 0
     localparam [7:0] AIF_SUM = 8'h84 + 8'h01 + 8'h0A + 8'h01;
     localparam [7:0] AIF_CK  = 8'h00 - AIF_SUM;
 
@@ -109,14 +109,14 @@ module hdmi_tx (
             frame_ctr <= 8'd0; rot <= 2'd0;
             hd0 <= 24'd0; hd1 <= 24'd0;
         end else begin
-            // escritura en la FIFO (se descarta si está llena)
+            // FIFO write (discarded if full)
             if (aud_we && af_n != 4'd8) begin
                 af[af_wp] <= {aud_r, aud_l};
                 af_wp <= af_wp + 3'd1;
             end
             af_n <= af_n + ((aud_we && af_n != 4'd8) ? 4'd1 : 4'd0) - (af_pop ? {1'b0, af_take} : 4'd0);
             if (load_pk) begin
-                // ---------------- paquete 0: muestras de audio
+                // ---------------- packet 0: audio samples
                 if (af_take == 3'd0) begin
                     hd0 <= 24'd0;
                     sp00 <= 56'd0; sp01 <= 56'd0;
@@ -131,7 +131,7 @@ module hdmi_tx (
                     frame_ctr <= (af_take == 3'd2) ? ((f1 == 8'd191) ? 8'd0 : f1 + 8'd1) : f1;
                 end
                 sp02 <= 56'd0; sp03 <= 56'd0;
-                // ---------------- paquete 1: rotación
+                // ---------------- packet 1: rotation
                 rot <= rot + 2'd1;
                 case (rot)
                 2'd1: begin                                   // AVI InfoFrame
@@ -156,7 +156,7 @@ module hdmi_tx (
         end
     end
 
-    // ---------------------------------------------------------------- ensamblado + ECC
+    // ---------------------------------------------------------------- assembly + ECC
     function [7:0] next_ecc(input [7:0] ecc, input b);
         next_ecc = (ecc >> 1) ^ ((ecc[0] ^ b) ? 8'b1000_0011 : 8'd0);
     endfunction
@@ -194,7 +194,7 @@ module hdmi_tx (
         end
     end
 
-    // ---------------------------------------------------------------- selección de modo
+    // ---------------------------------------------------------------- mode select
     localparam M_CTL = 3'd0, M_VID = 3'd1, M_VGD = 3'd2, M_DI = 3'd3, M_DGD = 3'd4;
     reg [2:0]  mode;
     reg [23:0] vdat;
@@ -207,7 +207,7 @@ module hdmi_tx (
         didat <= {d2, d1, 1'b1, hbit, vsync, hsync};
     end
 
-    // ---------------------------------------------------------------- TMDS por canal
+    // ---------------------------------------------------------------- TMDS per channel
     wire [9:0] t0, t1, t2;
     tmds_chan #(.CN(0)) u_c0 (.clk(clk_pix), .rst(rst), .mode(mode), .vd(vdat[7:0]),
                               .cd(ctl[1:0]), .dd(didat[3:0]), .q(t0));
@@ -217,7 +217,7 @@ module hdmi_tx (
                               .cd(ctl[5:4]), .dd(didat[11:8]), .q(t2));
     assign tmds_word = {t2, t1, t0};
 
-    // ---------------------------------------------------------------- serialización
+    // ---------------------------------------------------------------- serialization
     wire [9:0] tw [0:3];
     assign tw[0] = t0; assign tw[1] = t1; assign tw[2] = t2; assign tw[3] = 10'b0000011111;
     wire [3:0] ser;
@@ -236,7 +236,7 @@ module hdmi_tx (
 endmodule
 
 // ============================================================================
-// tmds_chan - un canal TMDS: vídeo (8b/10b con balance), control, TERC4, guardas
+// tmds_chan - one TMDS channel: video (8b/10b with DC balance), control, TERC4, guards
 // ============================================================================
 module tmds_chan #(
     parameter CN = 0
@@ -249,7 +249,7 @@ module tmds_chan #(
     input  wire [3:0] dd,
     output reg  [9:0] q
 );
-    // ---- vídeo: minimización de transiciones
+    // ---- video: transition minimization
     wire [3:0] n1d = vd[0] + vd[1] + vd[2] + vd[3] + vd[4] + vd[5] + vd[6] + vd[7];
     wire use_xnor = (n1d > 4'd4) || (n1d == 4'd4 && vd[0] == 1'b0);
     wire [8:0] qm;
@@ -261,7 +261,7 @@ module tmds_chan #(
     assign qm[8] = ~use_xnor;
     wire [3:0] n1q = qm[0] + qm[1] + qm[2] + qm[3] + qm[4] + qm[5] + qm[6] + qm[7];
     wire [3:0] n0q = 4'd8 - n1q;
-    reg  signed [4:0] cnt;                         // disparidad acumulada
+    reg  signed [4:0] cnt;                         // accumulated disparity
 
     // ---- TERC4
     reg [9:0] terc;
@@ -286,7 +286,7 @@ module tmds_chan #(
         default: ctrl = 10'b1010101011;
         endcase
     end
-    // guardas: vídeo (ch0, ch2 = 1011001100; ch1 = 0100110011), island (ch1, ch2 = 0100110011)
+    // guards: video (ch0, ch2 = 1011001100; ch1 = 0100110011), island (ch1, ch2 = 0100110011)
     wire [9:0] vguard = (CN == 1) ? 10'b0100110011 : 10'b1011001100;
     wire [9:0] dguard0 = (dd[1:0] == 2'b00) ? 10'b1010001110 :
                          (dd[1:0] == 2'b01) ? 10'b1001110001 :

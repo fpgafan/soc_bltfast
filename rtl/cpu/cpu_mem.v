@@ -1,30 +1,30 @@
 // ============================================================================
-// cpu_mem.v - Unidad de memoria de la CPU
+// cpu_mem.v - CPU memory unit
 //
-//  * ROM de arranque (BSRAM, $readmemh) en 0x0000_0000 (cacheable)
-//  * Puerto de la SDRAM (maestro del controlador): rellenos de icache / dcache
-//    (ráfagas de 8 palabras), lecturas no cacheables (0x5xxx_xxxx = alias sin
-//    caché de la SDRAM) y escrituras desde los buffers de combinación.
-//  * Bus de E/S (0x8xxx_xxxx): una transacción cada vez (req -> ack).
+//  * Boot ROM (BSRAM, $readmemh) at 0x0000_0000 (cacheable)
+//  * SDRAM port (controller master): icache / dcache refills
+//    (8-word bursts), uncacheable reads (0x5xxx_xxxx = uncached alias of
+//    the SDRAM) and writes from the write-combining buffers.
+//  * I/O bus (0x8xxx_xxxx): one transaction at a time (req -> ack).
 //
-//  Escrituras: dos buffers de combinación (WCB) de una línea de 32 bytes con
-//  máscara por byte. Los stores a la misma línea se fusionan; al cambiar de
-//  línea la anterior se vacía con una ráfaga (palabras sin bytes válidos
-//  recortadas por los extremos). Un store de E/S espera a que los WCB estén
-//  vacíos y bloquea los siguientes stores hasta ejecutarse (orden estricto).
-//  Un WCB activo sin actividad durante 32 ciclos se vacía solo.
+//  Writes: two write-combining buffers (WCB) of one 32-byte line with a
+//  per-byte mask. Stores to the same line are merged; when the line changes
+//  the previous one is flushed with a burst (words with no valid bytes
+//  trimmed at the ends). An I/O store waits for the WCBs to be empty
+//  and blocks subsequent stores until it executes (strict ordering).
+//  An active WCB idle for 32 cycles flushes itself.
 //
-//  Los rellenos de dcache y las lecturas no cacheables esperan a que los WCB
-//  y el store de E/S pendiente se hayan escrito (orden lectura tras escritura).
+//  dcache refills and uncacheable reads wait until the WCBs and the
+//  pending I/O store have been written (read-after-write ordering).
 // ============================================================================
 `default_nettype none
 module cpu_mem #(
-    parameter ROM_AW   = 11,            // palabras de ROM: 2^11 = 8 KB
+    parameter ROM_AW   = 11,            // ROM words: 2^11 = 8 KB
     parameter ROM_FILE = "boot.hex"
 )(
     input  wire        clk,
     input  wire        rst,
-    // ---------------- núcleo
+    // ---------------- core
     input  wire        ic_fill_req,
     input  wire [31:0] ic_fill_addr,
     output reg         ic_fill_done,
@@ -43,8 +43,8 @@ module cpu_mem #(
     input  wire [31:0] sb_data,
     input  wire [3:0]  sb_strb,
     output reg         sb_full,
-    // ---------------- escrituras a las cachés
-    output reg         icw_de,          // dato de icache
+    // ---------------- cache writes
+    output reg         icw_de,          // icache data
     output reg  [10:0] icw_didx,
     output reg  [31:0] icw_ddata,
     output reg         icw_te,
@@ -56,18 +56,18 @@ module cpu_mem #(
     output reg         dcw_te,
     output reg  [7:0]  dcw_tidx,
     output reg  [11:0] dcw_tdata,
-    // ---------------- maestro de la SDRAM
+    // ---------------- SDRAM master
     output reg         m_req,
     output reg         m_we,
     output reg  [22:2] m_addr,
-    output reg  [3:0]  m_len,           // palabras - 1
+    output reg  [3:0]  m_len,           // words - 1
     input  wire        m_ack,
     output wire [31:0] m_wdata,
     output wire [3:0]  m_wmask,
     input  wire        m_wnext,
     input  wire [31:0] m_rdata,
     input  wire        m_rvalid,
-    // ---------------- bus de E/S
+    // ---------------- I/O bus
     output reg         io_req,
     output reg         io_we,
     output reg  [31:0] io_a,
@@ -92,30 +92,30 @@ module cpu_mem #(
     always @(posedge clk) rom_q <= rom[rom_a];
 
     // ========================================================================
-    // Buffers de combinación de escritura (2)
+    // Write-combining buffers (2)
     // ========================================================================
-    reg         wv   [0:1];             // ocupado
-    reg         wfl  [0:1];             // pendiente de vaciar
+    reg         wv   [0:1];             // busy
+    reg         wfl  [0:1];             // pending flush
     reg  [22:5] wtag [0:1];
-    // datos de los WCB: RAM distribuida por carril de byte (16 = 2 x 8 palabras),
-    // escritura con máscara de bytes (sin multiplexores de fusión)
+    // WCB data: distributed RAM per byte lane (16 = 2 x 8 words),
+    // written with a byte mask (no merge multiplexers)
     reg  [7:0]  wl0 [0:15] /* synthesis syn_ramstyle = "distributed_ram" */;
     reg  [7:0]  wl1 [0:15] /* synthesis syn_ramstyle = "distributed_ram" */;
     reg  [7:0]  wl2 [0:15] /* synthesis syn_ramstyle = "distributed_ram" */;
     reg  [7:0]  wl3 [0:15] /* synthesis syn_ramstyle = "distributed_ram" */;
     reg  [3:0]  wm0 [0:7], wm1 [0:7];
-    reg         wact;                   // índice del WCB activo (recibe stores)
+    reg         wact;                   // index of the active WCB (receives stores)
     reg  [4:0]  wtimer;
 
-    reg         iop;                    // store de E/S pendiente
+    reg         iop;                    // I/O store pending
     reg  [31:0] iop_a, iop_d;
     reg  [3:0]  iop_s;
 
-    // FIFO de entrada de 2 stores entre el núcleo y los WCB. El núcleo solo ve
-    // sb_full registrado (no depende de comparar etiquetas en el mismo ciclo).
-    // La cabeza (q0) se procesa cuando los WCB pueden aceptarla; un store de
-    // E/S espera a que no haya otro pendiente y bloquea los posteriores
-    // (orden estricto de escrituras).
+    // 2-store input FIFO between the core and the WCBs. The core only sees
+    // a registered sb_full (it does not depend on tag compares in the same cycle).
+    // The head (q0) is processed when the WCBs can accept it; an I/O
+    // store waits until no other is pending and blocks later ones
+    // (strict write ordering).
     reg         q0_v, q1_v;
     reg  [31:0] q0_addr, q0_data, q1_addr, q1_data;
     reg  [3:0]  q0_strb, q1_strb;
@@ -129,26 +129,26 @@ module cpu_mem #(
     wire [22:5] act_tag = wact ? wtag[1] : wtag[0];
     wire oth_v   = wact ? wv[0] : wv[1];
     wire act_match = act_v & ~act_fl & (act_tag == q_addr[22:5]);
-    // La cabeza se procesa en dos fases: (1) se evalúa y se registra la
-    // decisión (qm_*), (2) se aplica. Entre ambas el estado de los WCB solo
-    // puede cambiar a favor (un vaciado que termina), porque el marcado por
-    // inactividad no se hace con una decisión positiva pendiente.
+    // The head is processed in two phases: (1) the decision is evaluated and
+    // registered (qm_*), (2) it is applied. In between, the WCB state can only
+    // change favorably (a flush that finishes), because idle marking is not
+    // done while a positive decision is pending.
     wire q_ok_c  = q_io ? ~iop :
                    q_sd ? (~iop & (act_match | ~act_v | ~oth_v)) : 1'b1;
     reg  qm_v, qm_ok, qm_match;
     wire q_pop   = q0_v & qm_v & qm_ok;
-    wire q_v     = q_pop;                // procesar la cabeza
+    wire q_v     = q_pop;                // process the head
     wire [1:0] q_cnt  = {1'b0, q0_v} + {1'b0, q1_v};
     wire [1:0] q_cntn = q_cnt - {1'b0, q_pop} + {1'b0, sb_push};
-    wire wcb_empty = ~wv[0] & ~wv[1];  // (la FIFO no cuenta: es más joven que iop)
+    wire wcb_empty = ~wv[0] & ~wv[1];  // (the FIFO does not count: it is younger than iop)
 
-    // vaciado en curso
+    // flush in progress
     reg         fl_busy;
     reg         fl_buf;
     reg  [2:0]  fl_idx;
     assign m_wdata = {wl3[{fl_buf, fl_idx}], wl2[{fl_buf, fl_idx}], wl1[{fl_buf, fl_idx}], wl0[{fl_buf, fl_idx}]};
     assign m_wmask = fl_buf ? wm1[fl_idx] : wm0[fl_idx];
-    // escritura de datos: al WCB activo (fusión o línea nueva en él) o al otro (cambio)
+    // data write: into the active WCB (merge or new line in it) or into the other one (switch)
     wire       w_we = q_v & q_sd;
     wire       w_tb = (qm_match | ~act_v) ? wact : ~wact;
     wire [3:0] w_ix = {w_tb, q_addr[4:2]};
@@ -164,7 +164,7 @@ module cpu_mem #(
                  m[1] ? n[15:8]  : o[15:8],  m[0] ? n[7:0]   : o[7:0]};
     endfunction
 
-    // primera / última palabra con algún byte válido
+    // first / last word with any valid byte
     function [2:0] first_set(input [7:0] v);
         integer i;
         begin
@@ -183,9 +183,9 @@ module cpu_mem #(
     wire [7:0] wany1 = {|wm1[7], |wm1[6], |wm1[5], |wm1[4], |wm1[3], |wm1[2], |wm1[1], |wm1[0]};
 
     // ========================================================================
-    // Peticiones pendientes
+    // Pending requests
     // ========================================================================
-    reg        dreq_p;                  // replay de carga
+    reg        dreq_p;                  // load replay
     reg [31:0] dreq_a;
     reg        fence_p;
     assign mem_hold = dreq_p | fence_p;
@@ -197,11 +197,11 @@ module cpu_mem #(
                S_SDRD = 4'd4, S_ROMRD = 4'd5, S_SDR1 = 4'd6, S_INV = 4'd7,
                S_FLWAIT = 4'd8;
     reg [3:0]  st;
-    reg        fill_i;                  // relleno de icache (1) o de dcache (0)
-    reg [31:0] fa;                      // dirección de la línea / palabra
-    reg [3:0]  fcnt;                    // palabras recibidas
-    reg [3:0]  rcnt;                    // direcciones de ROM emitidas
-    reg [8:0]  icnt;                    // barrido de invalidación
+    reg        fill_i;                  // icache refill (1) or dcache refill (0)
+    reg [31:0] fa;                      // line / word address
+    reg [3:0]  fcnt;                    // words received
+    reg [3:0]  rcnt;                    // ROM addresses issued
+    reg [8:0]  icnt;                    // invalidation sweep
     reg        inv_i;
 
     wire wcb_need_flush = (wv[0] & wfl[0]) | (wv[1] & wfl[1]);
@@ -227,13 +227,13 @@ module cpu_mem #(
             sb_full <= 1'b0;
             qm_v <= 1'b0;
         end else begin
-            // ------------------------------------------------ peticiones del núcleo
+            // ------------------------------------------------ core requests
             if (mreq)       begin dreq_p <= 1'b1; dreq_a <= mreq_addr; end
             if (mreq_fence) fence_p <= 1'b1;
             if (io_take)    io_valid <= 1'b0;
 
             // ------------------------------------------------ stores
-            // FIFO: avance de la cabeza y entrada del store de M
+            // FIFO: head advance and entry of the store from M
             if (q_pop) begin
                 q0_v <= q1_v;
                 q0_addr <= q1_addr; q0_data <= q1_data; q0_strb <= q1_strb;
@@ -246,14 +246,14 @@ module cpu_mem #(
                     q1_v <= 1'b1; q1_addr <= sb_addr; q1_data <= sb_data; q1_strb <= sb_strb;
                 end
             end
-            // evaluación de la cabeza (fase 1) / aplicación (fase 2)
+            // head evaluation (phase 1) / application (phase 2)
             if (q0_v && !qm_v) begin
                 qm_v     <= 1'b1;
                 qm_ok    <= q_ok_c;
                 qm_match <= act_match;
             end else
                 qm_v <= 1'b0;
-            // lleno: las dos entradas ocupadas tras este ciclo
+            // full: both entries occupied after this cycle
             sb_full <= (q_cntn == 2'd2);
             if (q_v) begin
                 if (q_io) begin
@@ -265,8 +265,8 @@ module cpu_mem #(
                         if (wact) wm1[q_addr[4:2]] <= wm1[q_addr[4:2]] | q_strb;
                         else      wm0[q_addr[4:2]] <= wm0[q_addr[4:2]] | q_strb;
                     end else begin
-                        // nueva línea: en el activo si está libre, si no en el otro
-                        // (sb_full garantiza que uno de los dos lo está)
+                        // new line: in the active one if free, otherwise in the other
+                        // (sb_full guarantees that one of them is free)
                         if (!act_v) begin
                             if (wact) begin wv[1] <= 1'b1; wfl[1] <= 1'b0; wtag[1] <= q_addr[22:5]; end
                             else      begin wv[0] <= 1'b1; wfl[0] <= 1'b0; wtag[0] <= q_addr[22:5]; end
@@ -285,17 +285,17 @@ module cpu_mem #(
                         end
                     end
                 end
-                // stores a la ROM u otras zonas: se descartan
+                // stores to the ROM or other regions: discarded
             end else if (act_v & ~act_fl & (~q0_v | (qm_v & ~qm_ok))) begin
-                // vaciado por inactividad o porque alguien necesita la memoria
-                // (solo sin store pendiente o con la cabeza bloqueada)
+                // flush on idle or because someone needs the memory
+                // (only with no pending store or with the head blocked)
                 if (wtimer == 5'd31 || dreq_p || fence_p || ic_inval_req || iop) begin
                     if (wact) wfl[1] <= 1'b1; else wfl[0] <= 1'b1;
                 end else if (!sb_push && !q0_v)
                     wtimer <= wtimer + 5'd1;
             end
 
-            // ------------------------------------------------ máquina de estados
+            // ------------------------------------------------ state machine
             case (st)
             S_IDLE: begin
                 if (ic_fill_req && !ic_fill_done) begin
@@ -313,7 +313,7 @@ module cpu_mem #(
                         st     <= S_SDRD;
                     end
                 end else if (wcb_need_flush) begin
-                    // vaciar un WCB marcado (el no activo primero)
+                    // flush a marked WCB (the inactive one first)
                     fl_buf <= (wv[~wact] & wfl[~wact]) ? ~wact : wact;
                     st     <= S_FLUSH;
                 end else if (iop && wcb_empty) begin
@@ -361,7 +361,7 @@ module cpu_mem #(
                 end
             end
 
-            // ---------------- relleno desde la SDRAM (8 palabras)
+            // ---------------- refill from SDRAM (8 words)
             S_SDRD: begin
                 if (m_ack) m_req <= 1'b0;
                 if (m_rvalid) begin
@@ -384,7 +384,7 @@ module cpu_mem #(
                 end
             end
 
-            // ---------------- relleno desde la ROM (lectura síncrona)
+            // ---------------- refill from ROM (synchronous read)
             S_ROMRD: begin
                 if (rcnt != 4'd8) rcnt <= rcnt + 4'd1;
                 if (rcnt != 4'd0) begin
@@ -407,7 +407,7 @@ module cpu_mem #(
                 end
             end
 
-            // ---------------- lectura suelta no cacheable de la SDRAM
+            // ---------------- single uncacheable SDRAM read
             S_SDR1: begin
                 if (m_ack) m_req <= 1'b0;
                 if (m_rvalid) begin
@@ -419,7 +419,7 @@ module cpu_mem #(
                 end
             end
 
-            // ---------------- bus de E/S
+            // ---------------- I/O bus
             S_IOR: if (io_ack) begin
                 io_valid <= 1'b1;
                 io_addr  <= io_a;
@@ -432,9 +432,9 @@ module cpu_mem #(
                 st  <= S_IDLE;
             end
 
-            // ---------------- vaciado de un WCB
+            // ---------------- WCB flush
             S_FLUSH: begin
-                // recortar palabras vacías de los extremos
+                // trim empty words at the ends
                 fl_idx  <= first_set(fl_buf ? wany1 : wany0);
                 m_req   <= 1'b1;
                 m_we    <= 1'b1;
@@ -456,7 +456,7 @@ module cpu_mem #(
                 end
             end
 
-            // ---------------- invalidación de etiquetas
+            // ---------------- tag invalidation
             S_INV: begin
                 if (inv_i) begin
                     icw_te <= 1'b1; icw_tidx <= icnt[7:0]; icw_tdata <= 12'd0;
@@ -476,7 +476,7 @@ module cpu_mem #(
         end
     end
 
-    // dirección de la ROM
+    // ROM address
     always @(*) begin
         rom_a = fa[ROM_AW+1:2] + {{(ROM_AW-4){1'b0}}, rcnt};
     end
