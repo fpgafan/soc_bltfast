@@ -29,6 +29,13 @@ Exceptions (third-party components with their own license):
                       distributed under GPL v2.
   sim/tests/          riscv-tests: BSD license (see
                       sim/tests/env/LICENSE.riscv-tests).
+  sw/lib/font8x8.c    letters, digits and Latin-1 symbols rendered from the
+                      Press Start 2P font (Copyright 2012 The Press Start 2P
+                      Project Authors, Reserved Font Name "Press Start 2P"):
+                      SIL Open Font License 1.1 (see
+                      resources/OFL-PressStart2P.txt; the font itself is
+                      resources/PressStart2P-Regular.ttf). The remaining glyphs
+                      come from Unscii (viznut), public domain.
   sw/lib/genmidi_fd.c FM instruments from Freedoom: 3-clause BSD license
                       (full text in the file itself).
   rtl/audio/opl2.v, sim/oplmodel.py, tools/opl2.js

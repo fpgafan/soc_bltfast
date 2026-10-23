@@ -1,37 +1,61 @@
 #!/usr/bin/env python3
 """mkfont.py - Builds sw/lib/font8x8.c (256 characters x 8 bytes, MSB = leftmost
-   pixel, code page 850) from the public domain Unscii 8x8 font, plus a PNG preview.
+   pixel, code page 850), plus a PNG preview (sw/build/font_preview.png).
 
-   python tools/mkfont.py unscii-8.hex
+   python tools/mkfont.py unscii-8.hex [--ttf font.ttf]
+   python tools/mkfont.py sw/lib/font8x8.c --ttf font.ttf
 
-   unscii-8.hex: http://viznut.fi/unscii/ (Unscii by viznut, public domain).
+   The base glyphs come from the public domain Unscii 8x8 font
+   (unscii-8.hex: http://viznut.fi/unscii/, by viznut) or from an existing
+   font8x8.c. With --ttf, every character the TrueType font has is replaced by
+   its rendering at 8 px (meant for pixel fonts drawn on an 8x8 grid, such as
+   Press Start 2P); box drawing, block elements and whatever it lacks keep the base glyphs.
    Codes 0x01-0x1F and 0x7F get the classic DOS symbols (smileys, arrows...)."""
-import os, sys
+import os, re, sys, argparse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if len(sys.argv) < 2:
-    sys.exit(__doc__)
-glyphs = {}
-for line in open(sys.argv[1]):
-    cp, _, bits = line.strip().partition(":")
-    if len(bits) == 16:                         # 8x8 glyphs only (16 hex digits)
-        glyphs[int(cp, 16)] = bytes.fromhex(bits)
+ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+ap.add_argument("base", help="unscii-8.hex or an existing font8x8.c")
+ap.add_argument("--ttf", help="pixel TrueType font rendered at 8 px over the base")
+a = ap.parse_args()
 
-# glyphs Unscii lacks: a substitute code point, or drawn here
-glyphs.setdefault(0x263C, glyphs.get(0x2609))                            # ☼ -> ☉
-glyphs.setdefault(0x2302, bytes([0x10, 0x28, 0x44, 0x82, 0x82, 0x82, 0xFE, 0x00]))   # ⌂
+base_cp850 = None                                # font8x8.c: already in code page order
+glyphs = {}
+if a.base.endswith(".c"):
+    src = open(a.base).read()
+    vals = [int(v, 16) for v in re.findall(r"0x([0-9a-fA-F]{2})", src[src.index("{"):])]
+    if len(vals) != 256 * 8:
+        sys.exit(f"{a.base}: expected 2048 bytes, found {len(vals)}")
+    base_cp850 = [bytes(vals[i * 8:i * 8 + 8]) for i in range(256)]
+    # keep the credits of the base (lines before the table description)
+    base_credits = [l for l in src.splitlines()[:6] if l.startswith("//") and "256 characters" not in l
+                    and not l.startswith("// font8x8.c")]
+else:
+    for line in open(a.base):
+        cp, _, bits = line.strip().partition(":")
+        if len(bits) == 16:                     # 8x8 glyphs only (16 hex digits)
+            glyphs[int(cp, 16)] = bytes.fromhex(bits)
+    # glyphs Unscii lacks: a substitute code point, or drawn here
+    glyphs.setdefault(0x263C, glyphs.get(0x2609))                            # ☼ -> ☉
+    glyphs.setdefault(0x2302, bytes([0x10, 0x28, 0x44, 0x82, 0x82, 0x82, 0xFE, 0x00]))   # ⌂
+    base_credits = ["// Unscii 8x8 (by viznut, public domain: http://viznut.fi/unscii/)"]
 
 DOS_LOW ="\u0000☺☻♥♦♣♠•◘○◙♂♀♪♫☼►◄↕‼¶§▬↨↑↓→←∟↔▲▼"
+
+
+def code_point(c):
+    if c < 32:
+        return ord(DOS_LOW[c])
+    if c == 0x7F:
+        return ord("⌂")
+    return ord(bytes([c]).decode("cp850"))
+
+
 missing = []
 font = []
 for c in range(256):
-    if c < 32:
-        u = ord(DOS_LOW[c])
-    elif c == 0x7F:
-        u = ord("⌂")
-    else:
-        u = ord(bytes([c]).decode("cp850"))
-    g = glyphs.get(u)
+    u = code_point(c)
+    g = base_cp850[c] if base_cp850 else glyphs.get(u)
     if g is None:
         if c:
             missing.append(f"{c:02X}=U+{u:04X}")
@@ -40,10 +64,35 @@ for c in range(256):
 if missing:
     print("missing (left blank):", " ".join(missing))
 
+credits = base_credits
+if a.ttf:
+    from PIL import Image, ImageDraw, ImageFont
+    ttf = ImageFont.truetype(a.ttf, 8)
+
+    def render(ch):
+        im = Image.new("1", (8, 8), 0)
+        d = ImageDraw.Draw(im)
+        d.fontmode = "1"                        # no antialiasing
+        d.text((0, 0), ch, font=ttf, fill=1)
+        return bytes(sum(im.getpixel((x, y)) << (7 - x) for x in range(8)) for y in range(8))
+    notdef = render("￿")                   # what the font draws for a character it lacks
+    used = 0
+    for c in range(32, 256):
+        if 0x2500 <= code_point(c) <= 0x259F:   # box drawing/blocks: the base ones join at the cell edges
+            continue
+        g = render(chr(code_point(c)))
+        if g != notdef and (any(g) or c in (0x20, 0xFF)):
+            font[c] = g
+            used += 1
+    print(f"{a.ttf}: {used} characters taken from the TrueType font")
+    name = os.path.splitext(os.path.basename(a.ttf))[0]
+    credits = [f"// glyphs rendered from {name} (see its license), the rest from"] +               [l for l in base_credits if "rendered from" not in l and "the rest from" not in l]
+
 out = os.path.join(ROOT, "sw", "lib", "font8x8.c")
 with open(out, "w", newline="\n") as f:
     f.write("// font8x8.c - 8x8 font, code page 850, generated by tools/mkfont.py from\n")
-    f.write("// Unscii 8x8 (by viznut, public domain: http://viznut.fi/unscii/)\n")
+    for l in credits:
+        f.write(l + "\n")
     f.write("// 256 characters x 8 rows, bit 7 = leftmost pixel\n#include <stdint.h>\n")
     f.write("const uint8_t font8x8[256 * 8] __attribute__((aligned(4))) = {\n")
     for g in font:

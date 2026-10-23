@@ -5,6 +5,10 @@
     .section .text.start
     .globl _start
 _start:
+    .option push
+    .option norelax
+    la   gp, __global_pointer$   # first: the linker relaxes 'la' of nearby symbols to gp-relative
+    .option pop
     la   t0, _img_lma            # absolute addresses: the stub runs where it was linked
     la   t1, _img_start
     la   t2, _img_end
@@ -23,7 +27,6 @@ _start:
 4:  fence
     fence.i
     li   sp, 0x40800000          # stack at the top of the SDRAM, above the menu
-    la   gp, __global_pointer$
     la   t0, main
     jr   t0
 
