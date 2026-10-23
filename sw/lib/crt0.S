@@ -12,6 +12,8 @@ _start:
     j    1b
 2:  la   t0, trap_entry
     csrw mtvec, t0
+    li   a0, 0
+    li   a1, 0
     call main
     li   a0, 0x80000004          # LEDs = 101010: end (used by the simulation)
     li   a1, 0x2A

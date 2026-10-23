@@ -20,7 +20,8 @@ __pycache__/
 *.elf
 *.fs
 
-# On GitHub only Doom from sw/apps is published
+# On GitHub only Doom and OpenJazz from sw/apps are published
 sw/apps/*
 !sw/apps/doom/
+!sw/apps/open_jazz/
 sw/apps/doom/wad/

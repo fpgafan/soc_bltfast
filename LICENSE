@@ -27,6 +27,12 @@ Exceptions (third-party components with their own license):
                       ozkl and others): GNU GPL v2 (see sw/apps/doom/src/LICENSE).
                       Any binary that includes Doom (build/doom.bin) is
                       distributed under GPL v2.
+  sw/apps/open_jazz/  OpenJazz (AJ Thomson, Carsten Teibes and others): GNU GPL v2 (see
+                      sw/apps/open_jazz/COPYING); its ext/ libraries keep their
+                      own licenses (xmp, miniz, argparse, stb, scale2x: see the
+                      LICENSE/COPYING file in each folder). Any binary that
+                      includes OpenJazz (build/openjazz.bin) is distributed
+                      under GPL v2.
   sim/tests/          riscv-tests: BSD license (see
                       sim/tests/env/LICENSE.riscv-tests).
   sw/lib/font8x8.c    letters, digits and Latin-1 symbols rendered from the
