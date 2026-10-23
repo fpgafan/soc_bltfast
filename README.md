@@ -1,5 +1,22 @@
 # bltfast — RISC-V SoC with 2D engine and sound for the Tang Nano 20K
 
+> [!WARNING]
+> **Disclaimer — AI-generated proof of concept.**
+> This repository (hardware description, software, tools and documentation) was
+> created largely with the help of AI. It is an experimental **proof of concept**,
+> not a product: it has only been tested on the author's own board and may contain
+> bugs, timing problems or incorrect documentation.
+>
+> It is provided **"as is", without warranty of any kind**, express or implied,
+> including fitness for a particular purpose. The author accepts **no responsibility
+> or liability** for any use made of it or for any damage that may result, including
+> damage to hardware (FPGA boards, SD cards, peripherals connected to the pins, such
+> as a 5 V PS/2 keyboard without level shifting) or loss of data.
+> **Use it entirely at your own risk.**
+>
+> DOOM is a trademark of id Software / ZeniMax; this project is not affiliated with
+> or endorsed by them, nor by Sipeed or Gowin. No game data is included.
+
 A SoC written from scratch for the Sipeed Tang Nano 20K (Gowin GW2AR-LV18QN88C8/I7):
 
 | Block | Summary |
