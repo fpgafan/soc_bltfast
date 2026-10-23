@@ -441,7 +441,7 @@ function run() {
       if (opt.shots.includes(frame)) shot('f' + String(frame).padStart(5, '0') + '.png');
       if (frame % 60 === 0) {
         const s = (Date.now() - t0) / 1000;
-        process.stderr.write(`[frame ${frame}: ${(cycles / 1e6).toFixed(0)} M instr, ${s.toFixed(0)} s, ${flips} cambios de buffer en el último segundo, desalineados=${misal}]\n`);
+        process.stderr.write(`[frame ${frame}: ${(cycles / 1e6).toFixed(0)} M instr, ${s.toFixed(0)} s, ${flips} buffer flips in the last second, misaligned=${misal}]\n`);
         flips = 0;
         if (s > opt.maxsec) break;
       }

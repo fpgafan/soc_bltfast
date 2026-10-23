@@ -21,18 +21,18 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 -------------------------------------------------------------------------------
-Excepciones (componentes de terceros con su propia licencia):
+Exceptions (third-party components with their own license):
 
   sw/apps/doom/src/   doomgeneric / Chocolate Doom (id Software, Simon Howard,
-                      ozkl y otros): GNU GPL v2 (ver sw/apps/doom/src/LICENSE).
-                      Todo binario que incluya Doom (build/doom.bin) se
-                      distribuye bajo GPL v2.
-  sim/tests/          riscv-tests: licencia BSD (ver
+                      ozkl and others): GNU GPL v2 (see sw/apps/doom/src/LICENSE).
+                      Any binary that includes Doom (build/doom.bin) is
+                      distributed under GPL v2.
+  sim/tests/          riscv-tests: BSD license (see
                       sim/tests/env/LICENSE.riscv-tests).
-  sw/lib/genmidi_fd.c instrumentos FM de Freedoom: licencia BSD de 3
-                      cláusulas (texto completo en el propio fichero).
+  sw/lib/genmidi_fd.c FM instruments from Freedoom: 3-clause BSD license
+                      (full text in the file itself).
   rtl/audio/opl2.v, sim/oplmodel.py, tools/opl2.js
-                      derivados de Nuked-OPL3 (nukeykt): GNU LGPL 2.1 (ver
+                      derived from Nuked-OPL3 (nukeykt): GNU LGPL 2.1 (see
                       rtl/audio/LICENSE.nuked-opl3).
   sw/apps/doom/midi_stream.c, sw/apps/doom/opl_bltfast.c
-                      APIs de Chocolate Doom, parte de Doom: GNU GPL v2.
+                      Chocolate Doom APIs, part of Doom: GNU GPL v2.
