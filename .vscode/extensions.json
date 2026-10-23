@@ -1,0 +1,7 @@
+{
+    // VS Code ofrecerá instalarlas al abrir la carpeta
+    "recommendations": [
+        "ms-vscode.cpptools",
+        "mshr-h.veriloghdl"
+    ]
+}

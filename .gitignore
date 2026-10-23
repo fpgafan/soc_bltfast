@@ -1,0 +1,26 @@
+# Síntesis / PnR de Gowin (se regenera con build.tcl)
+impl/
+build.log
+
+# Compilación del software y de la simulación
+sw/build/
+sim/build/
+
+# Python
+__pycache__/
+*.pyc
+
+# Juegos e imágenes de tarjeta: nunca al repositorio
+*.wad
+*.WAD
+*.img
+
+# Binarios sueltos (publicarlos en Releases)
+*.bin
+*.elf
+*.fs
+
+# En GitHub solo se publica Doom de sw/apps
+sw/apps/*
+!sw/apps/doom/
+sw/apps/doom/wad/

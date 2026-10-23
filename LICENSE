@@ -1,0 +1,38 @@
+MIT License
+
+Copyright (c) 2026 Luis Rossell
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+-------------------------------------------------------------------------------
+Excepciones (componentes de terceros con su propia licencia):
+
+  sw/apps/doom/src/   doomgeneric / Chocolate Doom (id Software, Simon Howard,
+                      ozkl y otros): GNU GPL v2 (ver sw/apps/doom/src/LICENSE).
+                      Todo binario que incluya Doom (build/doom.bin) se
+                      distribuye bajo GPL v2.
+  sim/tests/          riscv-tests: licencia BSD (ver
+                      sim/tests/env/LICENSE.riscv-tests).
+  sw/lib/genmidi_fd.c instrumentos FM de Freedoom: licencia BSD de 3
+                      cláusulas (texto completo en el propio fichero).
+  rtl/audio/opl2.v, sim/oplmodel.py, tools/opl2.js
+                      derivados de Nuked-OPL3 (nukeykt): GNU LGPL 2.1 (ver
+                      rtl/audio/LICENSE.nuked-opl3).
+  sw/apps/doom/midi_stream.c, sw/apps/doom/opl_bltfast.c
+                      APIs de Chocolate Doom, parte de Doom: GNU GPL v2.

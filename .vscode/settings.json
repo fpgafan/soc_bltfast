@@ -1,0 +1,16 @@
+{
+    "files.associations": {
+        "*.S": "asm",
+        "*.ld": "linkerscript",
+        "*.cst": "plaintext"
+    },
+    "files.exclude": {
+        "**/__pycache__": true
+    },
+    "search.exclude": {
+        "impl/**": true,
+        "sw/build/**": true,
+        "sim/build/**": true,
+        "**/*.hex": true
+    }
+}

@@ -1,0 +1,14 @@
+{
+    // Autocompletado y errores en el editor con el compilador RISC-V del SoC
+    "configurations": [
+        {
+            "name": "RV32IM (bltfast)",
+            "compilerPath": "C:/riscv/xpack-riscv-none-elf-gcc-15.2.0-1/bin/riscv-none-elf-gcc.exe",
+            "compilerArgs": ["-march=rv32im_zicsr_zifencei", "-mabi=ilp32", "-ffreestanding"],
+            "includePath": ["${workspaceFolder}/sw/lib"],
+            "cStandard": "gnu17",
+            "intelliSenseMode": "windows-gcc-x86"
+        }
+    ],
+    "version": 4
+}
