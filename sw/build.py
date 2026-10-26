@@ -11,6 +11,7 @@ build.py - Builds the software for the bltfast SoC.
   python build.py bootmenu            SD program chooser -> build/sd/BOOT.BIN
   python build.py doom                Doom (apps/doom, with newlib) -> build/doom.bin
   python build.py openjazz            OpenJazz (apps/open_jazz, C++ with newlib) -> build/openjazz.bin
+  python build.py genesis             Genesis emulator (apps/genesis, PicoDrive core) -> build/genesis.bin
   python build.py <app> --run         builds, loads over UART (tools/load.py) and opens the terminal
   python build.py --src <file> --run
                                       if the file is in apps/<app>/, builds that app;
@@ -225,6 +226,67 @@ def build_doom():
     return binf
 
 
+def build_genesis():
+    """apps/genesis: PicoDrive core (picodrive/) + bltfast frontend, with newlib. Objects in build/genesis/."""
+    from concurrent.futures import ThreadPoolExecutor
+    d = os.path.join(HERE, "apps", "genesis")
+    pd = os.path.join(d, "picodrive")
+    ob = os.path.join(B, "genesis")
+    os.makedirs(ob, exist_ok=True)
+    arch = ["-march=rv32im_zicsr_zifencei", "-mabi=ilp32", "-g", "-ffunction-sections", "-fdata-sections"]
+    inc = ["-I" + os.path.join(HERE, "lib"), "-I" + pd, "-I" + os.path.join(pd, "zlib")]
+    # C cores: FAME/C (68000), CZ80 (Z80); the SH2 interpreter is only there for the 32X code
+    defs = ["-DEMU_F68K", "-D_USE_CZ80", "-DNDEBUG", "-falign-functions=2"]
+    libf = arch + inc + ["-O2", "-Wall", "-Wextra", "-Wno-unused-parameter", "-ffreestanding",
+                         "-fno-builtin", "-Dprintf=lib_printf"]
+    core = []
+    for sub in ("pico", "pico/cd", "pico/pico", "pico/32x", "pico/carthw", "pico/carthw/svp"):
+        core += glob.glob(os.path.join(pd, sub, "*.c"))
+    # files #included by other files
+    skip = ("carthw_cfg.c", "pico_cmn.c", "cell_map.c")
+    core = [f for f in core if os.path.basename(f) not in skip]
+    core += [os.path.join(pd, "pico", "sound", f) for f in
+             ("sound.c", "resampler.c", "sn76496.c", "ym2612.c", "ym2413.c", "mix.c")]
+    core += [os.path.join(pd, f) for f in ("cpu/fame/famec.c", "cpu/cz80/cz80.c", "cpu/sh2/sh2.c",
+                                           "cpu/sh2/mame/sh2pico.c", "unzip/unzip.c")]
+    core += glob.glob(os.path.join(pd, "zlib", "*.c"))
+    jobs = [(os.path.join(HERE, "lib", f), libf) for f in
+            ("crt0.S", "trap.c", "lib.c", "sd.c", "fat.c", "gfx.c", "audio.c", "font8x8.c")]
+    jobs += [(f, arch + inc + defs + ["-O2", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-sign-compare"])
+             for f in sorted(glob.glob(os.path.join(d, "*.c")))]
+    # names that clash with the SoC library
+    ren = ["-Dgfx_init=mcd_gfx_init", "-Dcrc32=zlib_crc32"]
+    jobs += [(f, arch + inc + defs + ren + ["-O2", "-w"]) for f in sorted(core)]
+    hdrs = glob.glob(os.path.join(HERE, "lib", "*.h")) + glob.glob(os.path.join(pd, "pico", "*.h"))
+
+    def cc(job):
+        src, flags = job
+        rel = os.path.relpath(src, HERE).replace(os.sep, "_").replace("/", "_")
+        obj = os.path.join(ob, os.path.splitext(rel)[0] + ".o")
+        if os.path.exists(obj) and os.path.getmtime(obj) > max([os.path.getmtime(src)] +
+                                                              [os.path.getmtime(h) for h in hdrs]):
+            return obj, None
+        r = subprocess.run(["riscv-none-elf-gcc"] + flags + ["-c", src, "-o", obj],
+                           capture_output=True, text=True)
+        return obj, (os.path.basename(src) + ":\n" + r.stdout + r.stderr) if (r.returncode or r.stderr) else None
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
+        res = list(ex.map(cc, jobs))
+    for _, msg in res:
+        if msg: print(msg)
+    objs = [o for o, _ in res]
+    if not all(os.path.exists(o) for o in objs):
+        sys.exit("ERROR: compilation failed")
+    elf = os.path.join(B, "genesis.elf")
+    run(["riscv-none-elf-gcc"] + arch + ["-nostartfiles", "-nostdlib"] + objs +
+        ["-T" + os.path.join(HERE, "lib", "app.ld"), "-Wl,--gc-sections", "-Wl,-Map," + os.path.join(B, "genesis.map"),
+         "-Wl,--no-warn-rwx-segments", "-Wl,--start-group", "-lc", "-lm", "-lgcc", "-Wl,--end-group", "-o", elf])
+    binf = os.path.join(B, "genesis.bin")
+    subprocess.check_call(["riscv-none-elf-objcopy", "-O", "binary", elf, binf])
+    subprocess.check_call(["riscv-none-elf-size", elf])
+    print(f"genesis.bin: {os.path.getsize(binf)} bytes")
+    return binf
+
+
 def app_sources(name):
     return sorted(glob.glob(os.path.join(HERE, "apps", name, "*.c")) +
                   glob.glob(os.path.join(HERE, "apps", name, "*.S")))
@@ -252,6 +314,8 @@ def main():
         binf = build_openjazz()
     elif a.what == "doom" or (a.src and os.path.abspath(a.src).startswith(os.path.join(HERE, "apps", "doom"))):
         binf = build_doom()
+    elif a.what == "genesis" or (a.src and os.path.abspath(a.src).startswith(os.path.join(HERE, "apps", "genesis"))):
+        binf = build_genesis()
     elif a.src:
         src = os.path.abspath(a.src)
         if not os.path.isfile(src):

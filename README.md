@@ -44,7 +44,8 @@ tools/          load.py (UART loader), img2c.py, midi2c.py, img2tex.py, wav2pcm.
 build.tcl       synthesis + PnR with Gowin EDA
 ```
 
-Of the applications in `sw/apps`, only Doom and OpenJazz are published in this repository.
+Of the applications in `sw/apps`, only Doom and OpenJazz are published in this repository
+(the Genesis emulator study is described below but not included, see its section).
 
 ## Building and loading
 
@@ -286,12 +287,58 @@ generated, printed over the UART every 5 s; the HDMI output shows at most 60):
   blitter column mostly at 22050 Hz (Diamondus 1 at 48 kHz); the audio rate
   has little effect on drawing.
 
+## Genesis / Mega Drive (feasibility study)
+
+`sw/apps/genesis`: a software Sega Genesis / Mega Drive emulator (also Master
+System, Game Gear and SG-1000) as a normal program, on top of the C cores of
+[PicoDrive](https://github.com/notaz/picodrive) (FAME/C 68000, CZ80, VDP, YM2612,
+SN76489, emu2413) with a frontend for the SoC. It is **not published** in this
+repository: PicoDrive's license only allows non-commercial redistribution.
+Details (controls, `GENESIS.TXT` options, memory layout) in `sw/apps/genesis/README.md`.
+
+```
+cd sw
+python build.py genesis          # -> build/genesis.bin (~1 MB)
+```
+
+- ROMs (`.MD .GEN .SMD .BIN .SMS .GG .SG .ZIP`, up to 4 MB) in the root of the
+  microSD; the program lists them. SRAM in `NAME.SRM`, save state in `NAME.STA`.
+- Video: PicoDrive draws 8 bpp indices, the CRAM goes to the hardware palette and
+  the blitter scales to 640×480 (DMA); triple buffering, no wait for the vblank.
+- Sound: YM2612 + PSG at 22050 Hz streamed to one voice; the playback position
+  paces the emulation and at most one frame in a row is skipped when it is late.
+- Memory: program + core tables ~2.5 MB; the ROM goes to a fixed 4 MB area at
+  `0x402F_0000` (the stack is moved below it), framebuffers at `0x4070_0000`.
+
+**Feasibility.** Measured with `tools/socemu.js --timing` (cycle model calibrated
+with the Doom 2 timedemo: 35.1 FPS in the model vs ~33 on the board, so the board
+should be 5–10 % slower):
+
+| Game, configuration | Game speed | Frames on screen |
+|---|---|---|
+| *Sonic the Hedgehog*, default (fast renderer, frameskip 1, 22050 Hz) | **48–61 %** | 15–19 FPS |
+| *Sonic*, sound at 11025 Hz | 61–76 % | 18–23 FPS |
+| *Sonic*, 11025 Hz and no Z80 (no DAC drums) | 81–90 % | 25–32 FPS |
+| *Cave Story MD*, default | **87–100 %** | 25–41 FPS |
+| *Cave Story MD*, fast renderer, no frameskip | 80–93 % | 48–56 FPS |
+| *Cave Story MD*, accurate line renderer, no frameskip | 50–61 % | 30–37 FPS |
+
+Profile of Sonic: YM2612 ~22 % (six FM channels), Z80 ~19 %, tiles ~14 %, 68000
+~17 %; of Cave Story (accurate renderer): Z80 ~32 %, YM2612 ~14 %, VDP ~15 %.
+Cache misses, mispredicted branches and write-through stores add ~45 % to the
+instruction count. Conclusion: it works, but the speed depends a lot on how much
+the game uses the FM chip and the Z80: from almost full speed (Cave Story) to
+about half (Sonic); 60 FPS with every frame drawn is not reachable. Next
+steps, from least to most work: tune the build of the hot cores, a larger I-cache
+in the RTL (free BSRAMs; the working set of the cores is far above 8 KB), or a
+dynamic recompiler (68000/Z80 → RV32). Not yet tested on the board.
+
 ## Test tools
 
 | Tool | Use |
 |---|---|
 | `sim/rvtorture.py` + `sim/torture.sh` | random RV32IM programs (ALU, MUL/DIV, loads/stores, branches, calls, I/O, video) run on the board and in the emulator; compares the final signature |
-| `tools/socemu.js` | functional SoC emulator in Node.js (CPU, SD, blitter, video, PS/2, pads, OPL2): runs a `.bin`, saves PNG screenshots (`--shots`), simulates keys/pads (`--keys`, `--pads`) and records the FM music into a WAV (`--oplwav`, with `tools/opl2.js`) |
+| `tools/socemu.js` | functional SoC emulator in Node.js (CPU, SD, blitter, video, PS/2, pads, OPL2): runs a `.bin`, saves PNG screenshots (`--shots`), simulates keys/pads (`--keys`, `--pads`) and records the FM music into a WAV (`--oplwav`, with `tools/opl2.js`). By default 1 cycle per instruction; `--timing [I,D,U,B,S]` adds an approximate cycle model (I/D-cache misses with the real 8 KB direct-mapped geometry, uncached loads, mispredicted branches, load-use, MUL/DIV, stores that do not combine; default penalties 16,16,12,3,4, calibrated with Doom). `--prof elf` prints a profile by function. The playback position of the voices (`AUD_MON_POS`) is modelled, so PCM streaming paces correctly |
 
 ## History
 
@@ -301,6 +348,7 @@ generated, printed over the UART every 5 s; the HDMI output shows at most 60):
 | 2026-10-21 | Doom 2 tested; Doom FPS counter over the UART; `sd_init` recovers after a reset in the middle of a read; 90 MHz bitstream written to flash |
 | 2026-10-21 | **Hardware OPL2 (YM3812)** at `0x8000_9000` (`rtl/audio/opl2.v`), added to the `audio.v` mix; verified bit by bit with `sim/run_opl.py` against `sim/oplmodel.py` (Nuked-OPL3); emulator with OPL2 (`tools/opl2.js`, `--oplwav`). **Doom with FM music as on DOS**: Chocolate Doom's `i_oplmusic.c` with the WAD's `GENMIDI`, `opl_bltfast.c` and `midi_stream.c`. ~73 % logic utilization, Fmax 99.75 MHz |
 | 2026-10-21 | **MIDI on the OPL2 for custom programs** (`sw/lib/oplsynth.c`, Freedoom bank `genmidi_fd.c`, `midi_use_opl*` API, `midi_load_file`) |
+| 2026-10-26 | **Genesis emulator feasibility study** (`sw/apps/genesis`, PicoDrive core, not published); `tools/socemu.js`: cycle model `--timing` and voice playback position |
 
 ## Future plans
 

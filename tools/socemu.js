@@ -1,6 +1,10 @@
 // socemu.js - functional emulator of the bltfast SoC (RV32IM + basic peripherals)
 // usage: node socemu.js prog.bin sd.img [--frames N] [--shots 100,200] [--keys "t:code,..."] [--out dir]
 //      [--oplwav f.wav]  records the OPL2 output (FM music) into a mono WAV
+//      [--timing [I,D,U,B,S]] approximate cycle model instead of 1 cycle per instruction:
+//                        I/D = I-cache/D-cache miss penalty (8 KB direct-mapped, 32-byte lines),
+//                        U = uncached load, B = mispredicted branch, S = store that does not
+//                        combine with the previous one (other 32-byte block); default 16,16,12,3,4
 'use strict';
 const fs = require('fs');
 const zlib = require('zlib');
@@ -20,6 +24,10 @@ for (let i = 2; i < args.length; i++) {
   else if (a === '--prof') opt.prof = args[++i];
   else if (a === '--sdslow') opt.sdslow = +args[++i];
   else if (a === '--oplwav') opt.oplwav = args[++i];
+  else if (a === '--timing') {
+    opt.timing = [16, 16, 12, 3, 4];
+    if (i + 1 < args.length && /^[0-9,]+$/.test(args[i + 1])) args[++i].split(',').forEach((v, k) => opt.timing[k] = +v);
+  }
 }
 
 const SDRAM = 8 << 20;
@@ -32,7 +40,7 @@ let diskDirty = false;
 
 const x = new Int32Array(32);
 let pc = 0x40000000 | 0;
-let cycles = 0;           // = instructions (1 cycle each)
+let cycles = 0;           // = instructions (1 cycle each), unless --timing
 const CPU_HZ = 90000000, FRAME_CYC = Math.round(CPU_HZ / 60);
 let misal = 0, misalPCs = new Map();
 
@@ -50,6 +58,18 @@ const ps2q = [];
 let padState = 0;
 let reset = false, ledEnd = false;
 let slowReads = 0, audActive = 0, keyMus = 0, keySfx = 0;
+// sound engine: only what is needed for AUD_MON_POS (read position of the
+// monitored voice, used for PCM streaming); the samples are not mixed
+const audCtrl = new Uint32Array(32), audLen = new Uint32Array(32), audLoop = new Uint32Array(32);
+const audPitch = new Uint32Array(32), audKeyCyc = new Float64Array(32);
+let audMonV = 0;
+function audPos(v) {
+  const n = Math.floor((cycles - audKeyCyc[v]) * 48000 / CPU_HZ * audPitch[v] / 65536);
+  const len = audLen[v], lp = audLoop[v];
+  if (n < len) return n;
+  if (!(audCtrl[v] & 4) || lp >= len) return len;
+  return lp + (n - lp) % (len - lp);
+}
 // SD
 let sdTout = 0, sdCs = 0, sdRx = 0xFF, sdCmd = [], sdResp = [], sdPendR = -1, sdPendW = -1, sdApp = false;
 const sdBuf = new Uint8Array(512);
@@ -171,6 +191,8 @@ function ioLoad(a) {
   }
   if (a >= 0x80005000 && a < 0x80006000) {
     if ((a & 0xFFF) === 0x80C) return audActive;
+    if ((a & 0xFFF) === 0x824) return audMonV;
+    if ((a & 0xFFF) === 0x828) return audPos(audMonV);
     return 0;
   }
   if (a >= 0x80006000 && a < 0x80007000) {
@@ -228,7 +250,18 @@ function ioStore(a, v) {
     else if (o === 0x400) oplGain = v & 255;
     return;
   }
-  if (a >= 0x80005000 && a < 0x80006000) { if ((a & 0xFFF) === 0x804) { for (let b = 0; b < 32; b++) if ((v >>> b) & 1) { if (b < 24) keyMus++; else keySfx++; } } return; }
+  if (a >= 0x80005000 && a < 0x80006000) {
+    const o = a & 0xFFF;
+    if (o < 0x400) {
+      const vc = o >> 5, r = o & 0x1F;
+      if (r === 0x00) audCtrl[vc] = v; else if (r === 0x08) audLen[vc] = v;
+      else if (r === 0x0C) audLoop[vc] = v; else if (r === 0x10) audPitch[vc] = v;
+    } else if (o === 0x824) audMonV = v & 31;
+    else if (o === 0x804) {
+      for (let b = 0; b < 32; b++) if ((v >>> b) & 1) { audKeyCyc[b] = cycles; if (b < 24) keyMus++; else keySfx++; }
+    }
+    return;
+  }
   if (a >= 0x80006000 && a < 0x80007000) {
     const o = a & 0xFFF;
     if (o === 0x000) sdCs = v & 1;
@@ -262,6 +295,7 @@ function noteMisal(a) {
   misalPCs.set(k, (misalPCs.get(k) || 0) + 1);
 }
 function ld(a, n, sgn) {
+  if (TM) dAccess(a >>> 0);
   const i = memIdx(a);
   if (i < 0) {
     if ((a >>> 0) >= 0x80000000) { const v = ioLoad(a); return n === 4 ? v | 0 : n === 2 ? (sgn ? v << 16 >> 16 : v & 0xFFFF) : (sgn ? v << 24 >> 24 : v & 255); }
@@ -273,6 +307,7 @@ function ld(a, n, sgn) {
   return sgn ? (m8[i] << 24 >> 24) : m8[i];
 }
 function st(a, v, n) {
+  if (TM) { const b = (a >>> 5) & 0x7FFFFFF; if (b !== stBlock) { stBlock = b; cycles += PEN_S; tmStats.st++; } }
   const i = memIdx(a);
   if (i < 0) {
     if ((a >>> 0) >= 0x80000000) return ioStore(a, n === 4 ? v : n === 2 ? v & 0xFFFF : v & 255);
@@ -330,6 +365,19 @@ function shot(name) {
 }
 
 // ---------------------------------------------------------------- CPU
+// cycle model (--timing): penalties and direct-mapped tags of both caches
+const TM = !!opt.timing, [PEN_I, PEN_D, PEN_U, PEN_B, PEN_S] = opt.timing || [0, 0, 0, 0, 0];
+const itag = new Int32Array(256).fill(-1), dtag = new Int32Array(256).fill(-1);
+let loadRd = 0, stBlock = -1;
+const tmStats = { imiss: 0, dmiss: 0, unc: 0, br: 0, lu: 0, st: 0 };
+function dAccess(a) {
+  const u = a >>> 28;
+  if (u === 4 || u === 0) {
+    const line = (a >>> 5) & 0x3FFFF, k = line & 255;
+    if (dtag[k] !== line) { dtag[k] = line; cycles += PEN_D; tmStats.dmiss++; }
+  } else if (u === 5 || u === 1) { cycles += PEN_U; tmStats.unc++; }
+  else if (u >= 8) cycles += 3;
+}
 const prof = opt.prof ? [] : null;
 function run() {
   const t0 = Date.now();
@@ -344,6 +392,13 @@ function run() {
       const op = i & 0x7F, rd = (i >> 7) & 31, f3 = (i >> 12) & 7, r1 = (i >> 15) & 31, r2 = (i >> 20) & 31;
       let npc = (pc + 4) | 0;
       cycles++;
+      if (TM) {
+        const line = (pc >>> 5) & 0x3FFFF, k = line & 255;
+        if (itag[k] !== line) { itag[k] = line; cycles += PEN_I; tmStats.imiss++; }
+        // load-use: the previous instruction was a load whose result is used now
+        if (loadRd && (r1 === loadRd || (r2 === loadRd && (op === 0x33 || op === 0x23 || op === 0x63)))) { cycles++; tmStats.lu++; }
+        loadRd = op === 0x03 ? rd : 0;
+      }
       switch (op) {
         case 0x37: if (rd) x[rd] = i & 0xFFFFF000; break;
         case 0x17: if (rd) x[rd] = (pc + (i & 0xFFFFF000)) | 0; break;
@@ -351,7 +406,11 @@ function run() {
           const imm = ((i >> 31) << 20) | (((i >> 12) & 0xFF) << 12) | (((i >> 20) & 1) << 11) | (((i >> 21) & 0x3FF) << 1);
           if (rd) x[rd] = npc; npc = (pc + imm) | 0; break;
         }
-        case 0x67: { const t = (x[r1] + (i >> 20)) & ~1; if (rd) x[rd] = npc; npc = t; break; }
+        case 0x67: {
+          const t = (x[r1] + (i >> 20)) & ~1; if (rd) x[rd] = npc; npc = t;
+          if (TM && !(rd === 0 && r1 === 1)) { cycles += PEN_B; tmStats.br++; }   // returns: return address stack
+          break;
+        }
         case 0x63: {
           const imm = ((i >> 31) << 12) | (((i >> 7) & 1) << 11) | (((i >> 25) & 0x3F) << 5) | (((i >> 8) & 0xF) << 1);
           const a = x[r1], b = x[r2];
@@ -363,6 +422,8 @@ function run() {
             default: throw new Error('branch');
           }
           if (t) npc = (pc + imm) | 0;
+          // static prediction: backward taken, forward not taken
+          if (TM && t !== (imm < 0)) { cycles += PEN_B; tmStats.br++; }
           break;
         }
         case 0x03: {
@@ -390,6 +451,7 @@ function run() {
           const a = x[r1], b = x[r2], f7 = i >>> 25;
           let v;
           if (f7 === 1) {
+            if (TM) cycles += f3 < 4 ? 3 : 25;
             switch (f3) {
               case 0: v = Math.imul(a, b); break;
               case 1: v = Number((BigInt(a) * BigInt(b)) >> 32n) | 0; break;
@@ -410,7 +472,7 @@ function run() {
           }
           if (rd) x[rd] = v; break;
         }
-        case 0x0F: break;
+        case 0x0F: if (TM && f3 === 0) dtag.fill(-1); break;   // fence invalidates the D-cache
         case 0x73: {
           if (f3 === 0) {
             if (i === 0x30200073) { mstatus = (mstatus & ~0x88) | ((mstatus & 0x80) ? 8 : 0) | 0x80; npc = mepc; break; }
@@ -457,6 +519,7 @@ console.error(`slow reads: ${slowReads}`);
 console.error(`music notes: ${keyMus}, effects: ${keySfx}, OPL2 writes: ${oplWrites}`);
 if (opt.oplwav) oplRender(opt.oplwav);
 console.error(`\nend: frame ${frame}, ${cycles} instructions, reset=${reset}, misaligned=${misal}`);
+if (TM) console.error(`timing model: I-misses ${tmStats.imiss}, D-misses ${tmStats.dmiss}, uncached ${tmStats.unc}, branch penalties ${tmStats.br}, load-use ${tmStats.lu}, stores ${tmStats.st}`);
 if (misal) console.error('misaligned by pc:', [...misalPCs.entries()].slice(0, 20));
 if (diskDirty) fs.writeFileSync(imgf + '.out', disk);
 shot('final.png');
