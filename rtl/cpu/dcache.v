@@ -3,11 +3,12 @@
 // with no write-allocate (write-through, no-allocate).
 //   Read: address from E (latched every cycle), data/hit in M.
 //   Data write: store on hit (byte mask) or refill.
-//   4 8-bit BSRAMs (one per byte) + 1 tag BSRAM.
+//   One 8-bit memory per byte lane + 1 tag BSRAM.
 // ============================================================================
 `default_nettype none
 module dcache #(
-    parameter IDXW = 8                  // 256 lines = 8 KB
+    parameter IDXW = 9,                 // 512 lines = 16 KB
+    parameter TW   = 20 - IDXW          // {valid, addr[30], addr[22:IDXW+5]}
 )(
     input  wire        clk,
     input  wire [31:0] raddr,
@@ -20,7 +21,7 @@ module dcache #(
     // tags
     input  wire        twe,
     input  wire [IDXW-1:0] twidx,
-    input  wire [11:0] twdata
+    input  wire [TW-1:0] twdata
 );
     localparam AW = IDXW + 3;
 
@@ -28,12 +29,12 @@ module dcache #(
     reg [7:0]  m1 [0:(1<<AW)-1];
     reg [7:0]  m2 [0:(1<<AW)-1];
     reg [7:0]  m3 [0:(1<<AW)-1];
-    reg [11:0] tmem [0:(1<<IDXW)-1];
+    reg [TW-1:0] tmem [0:(1<<IDXW)-1];
     reg [7:0]  q0, q1, q2, q3;
-    reg [11:0] tq, ra_tag;
+    reg [TW-1:0] tq, ra_tag;
 
     integer i;
-    initial for (i = 0; i < (1<<IDXW); i = i + 1) tmem[i] = 12'd0;
+    initial for (i = 0; i < (1<<IDXW); i = i + 1) tmem[i] = {TW{1'b0}};
 
     wire [AW-1:0] ri = raddr[AW+1:2];
     always @(posedge clk) begin if (wbe[0]) m0[widx] <= wdata[7:0];   q0 <= m0[ri]; end
@@ -44,7 +45,7 @@ module dcache #(
         if (twe) tmem[twidx] <= twdata;
         tq <= tmem[raddr[IDXW+4:5]];
     end
-    always @(posedge clk) ra_tag <= {1'b1, raddr[30], raddr[22:13]};
+    always @(posedge clk) ra_tag <= {1'b1, raddr[30], raddr[22:IDXW+5]};
 
     assign rdata = {q3, q2, q1, q0};
     assign hit   = (tq == ra_tag);

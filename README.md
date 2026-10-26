@@ -21,7 +21,7 @@ A SoC written from scratch for the Sipeed Tang Nano 20K (Gowin GW2AR-LV18QN88C8/
 
 | Block | Summary |
 |---|---|
-| **CPU** | Custom RV32IM_Zicsr, 6 stages (F1 F2 D E M W), **90 MHz** (timing constrained at 99 MHz: ~10 % margin). 8 KB I-cache, 8 KB write-through D-cache, static prediction + JAL + return address stack, 4-cycle MUL (DSP), 12–38 cycle DIV, interrupts (timer, external, software) |
+| **CPU** | Custom RV32IM_Zicsr, 6 stages (F1 F2 D E M W), **90 MHz** (timing constrained at 99 MHz: ~10 % margin). 8 KB I-cache, 16 KB write-through D-cache (both direct-mapped; sizes are parameters of `rtl/cpu/cpu.v`), static prediction + JAL + return address stack, 4-cycle MUL (DSP), 12–38 cycle DIV, interrupts (timer, external, software) |
 | **Memory** | 8 MB embedded SDRAM, controller with 4 masters (video > sound > CPU ↔ 2D engine), bursts of up to 16 words; programmable capture latency and SDRAM clock phase (the boot ROM calibrates them automatically) |
 | **Video** | 640×480@60, 8 bpp with a 256-color RGB888 palette, double-buffered framebuffer in SDRAM, **hardware scrolling** with continuous horizontal and vertical wrap-around, VBLANK and raster interrupts |
 | **HDMI** | TMDS + data islands: **48 kHz PCM audio over HDMI**, AVI/Audio InfoFrames |
@@ -31,7 +31,7 @@ A SoC written from scratch for the Sipeed Tang Nano 20K (Gowin GW2AR-LV18QN88C8/
 | **MIDI** | Software player for standard MIDI files (type 0/1): on the sample voices (16 channels, GM instruments by family with generated band-limited waveforms, percussion on channel 10) or **on the OPL2** with GENMIDI banks (the bundled Freedoom one or the one from a Doom WAD) |
 | **I/O** | UART (2 Mbaud loader), microSD (SPI with hardware block transfers, FAT32/16), 2 SNES/NES pads, PS/2 keyboard, 6 LEDs, 2 buttons |
 
-Utilization (Gowin 1.9.12.04): ~73 % of the logic, 33/46 BSRAM, 13/24 DSP, 2/2 PLL.
+Utilization (Gowin 1.9.12.04): ~73 % of the logic, 37/46 BSRAM, 13/24 DSP, 2/2 PLL.
 
 ## Layout
 
@@ -330,15 +330,20 @@ instruction count. Conclusion: it works, but the speed depends a lot on how much
 the game uses the FM chip and the Z80: from almost full speed (Cave Story) to
 about half (Sonic); 60 FPS with every frame drawn is not reachable. Next
 steps, from least to most work: tune the build of the hot cores, a larger I-cache
-in the RTL (free BSRAMs; the working set of the cores is far above 8 KB), or a
+in the RTL (the working set of the cores is far above 8 KB), or a
 dynamic recompiler (68000/Z80 → RV32). Not yet tested on the board.
+
+These numbers are with the earlier 8 KB + 8 KB caches. In the model, the current
+8 KB I + 16 KB D gives Sonic ~2.5 % more work per second, and a 16 KB I-cache would give
+~5 % more on top of that. It fits in BSRAM (41/46), but the
+SoC then closes timing at only 91–95 MHz instead of 99 (see *Caches* in the history).
 
 ## Test tools
 
 | Tool | Use |
 |---|---|
 | `sim/rvtorture.py` + `sim/torture.sh` | random RV32IM programs (ALU, MUL/DIV, loads/stores, branches, calls, I/O, video) run on the board and in the emulator; compares the final signature |
-| `tools/socemu.js` | functional SoC emulator in Node.js (CPU, SD, blitter, video, PS/2, pads, OPL2): runs a `.bin`, saves PNG screenshots (`--shots`), simulates keys/pads (`--keys`, `--pads`) and records the FM music into a WAV (`--oplwav`, with `tools/opl2.js`). By default 1 cycle per instruction; `--timing [I,D,U,B,S]` adds an approximate cycle model (I/D-cache misses with the real 8 KB direct-mapped geometry, uncached loads, mispredicted branches, load-use, MUL/DIV, stores that do not combine; default penalties 16,16,12,3,4, calibrated with Doom). `--prof elf` prints a profile by function. The playback position of the voices (`AUD_MON_POS`) is modelled, so PCM streaming paces correctly |
+| `tools/socemu.js` | functional SoC emulator in Node.js (CPU, SD, blitter, video, PS/2, pads, OPL2): runs a `.bin`, saves PNG screenshots (`--shots`), simulates keys/pads (`--keys`, `--pads`) and records the FM music into a WAV (`--oplwav`, with `tools/opl2.js`). By default 1 cycle per instruction; `--timing [I,D,U,B,S]` adds an approximate cycle model (I/D-cache misses with the real direct-mapped geometry, sizes with `--cache I,D` in KB, default 8,16 as in the RTL; uncached loads, mispredicted branches, load-use, MUL/DIV, stores that do not combine; default penalties 16,16,12,3,4, calibrated with Doom). `--prof elf` prints a profile by function. The playback position of the voices (`AUD_MON_POS`) is modelled, so PCM streaming paces correctly |
 
 ## History
 
@@ -349,6 +354,7 @@ dynamic recompiler (68000/Z80 → RV32). Not yet tested on the board.
 | 2026-10-21 | **Hardware OPL2 (YM3812)** at `0x8000_9000` (`rtl/audio/opl2.v`), added to the `audio.v` mix; verified bit by bit with `sim/run_opl.py` against `sim/oplmodel.py` (Nuked-OPL3); emulator with OPL2 (`tools/opl2.js`, `--oplwav`). **Doom with FM music as on DOS**: Chocolate Doom's `i_oplmusic.c` with the WAD's `GENMIDI`, `opl_bltfast.c` and `midi_stream.c`. ~73 % logic utilization, Fmax 99.75 MHz |
 | 2026-10-21 | **MIDI on the OPL2 for custom programs** (`sw/lib/oplsynth.c`, Freedoom bank `genmidi_fd.c`, `midi_use_opl*` API, `midi_load_file`) |
 | 2026-10-26 | **Genesis emulator feasibility study** (`sw/apps/genesis`, PicoDrive core, not published); `tools/socemu.js`: cycle model `--timing` and voice playback position |
+| 2026-10-26 | **Caches**: the sizes are parameters (`IC_IDXW`, `DC_IDXW` in `rtl/cpu/cpu.v`); **D-cache 8 → 16 KB**. Cycle model (`--cache`): Doom 2 timedemo 35.1 → 36.7 FPS (+4.5 %). With I 16 KB + D 16 KB it would be 37.6 FPS (+7 %, Sonic +8 %), but Fmax drops to 91–95 MHz with any placement option (more BSRAM spreads the core out) and the 10 % margin is lost; I 8 + D 16 keeps 99.07 MHz. `rvtorture`: buffer B at +16 KB so it still collides in the cache. Not yet tested on the board |
 
 ## Future plans
 
@@ -384,8 +390,8 @@ least to most work:
    next one (double-buffered `I_VideoBuffer`): ~3 ms per frame.
 2. Profile with `tools/socemu.js --prof` and move the column and
    span loops to assembly.
-3. A larger data cache (8 KB → 16–32 KB, there are free BSRAMs) and/or the colormap
-   in its own BSRAM.
+3. ~~A larger data cache~~ (done: 16 KB, 35.1 → 36.7 FPS in the cycle model, Doom 2
+   timedemo) and/or the colormap in its own BSRAM.
 4. A blitter mode that draws textured columns/spans with a colormap.
 
 An FPU would not help: Doom uses fixed point. 60 FPS would also require

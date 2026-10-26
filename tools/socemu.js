@@ -5,6 +5,7 @@
 //                        I/D = I-cache/D-cache miss penalty (8 KB direct-mapped, 32-byte lines),
 //                        U = uncached load, B = mispredicted branch, S = store that does not
 //                        combine with the previous one (other 32-byte block); default 16,16,12,3,4
+//      [--cache I,D]     I-cache / D-cache size in KB for --timing (default 8,16, as in the RTL)
 'use strict';
 const fs = require('fs');
 const zlib = require('zlib');
@@ -24,6 +25,7 @@ for (let i = 2; i < args.length; i++) {
   else if (a === '--prof') opt.prof = args[++i];
   else if (a === '--sdslow') opt.sdslow = +args[++i];
   else if (a === '--oplwav') opt.oplwav = args[++i];
+  else if (a === '--cache') opt.cache = args[++i].split(',').map(Number);
   else if (a === '--timing') {
     opt.timing = [16, 16, 12, 3, 4];
     if (i + 1 < args.length && /^[0-9,]+$/.test(args[i + 1])) args[++i].split(',').forEach((v, k) => opt.timing[k] = +v);
@@ -367,13 +369,14 @@ function shot(name) {
 // ---------------------------------------------------------------- CPU
 // cycle model (--timing): penalties and direct-mapped tags of both caches
 const TM = !!opt.timing, [PEN_I, PEN_D, PEN_U, PEN_B, PEN_S] = opt.timing || [0, 0, 0, 0, 0];
-const itag = new Int32Array(256).fill(-1), dtag = new Int32Array(256).fill(-1);
+const [IC_KB, DC_KB] = opt.cache || [8, 16], IC_M = IC_KB * 32 - 1, DC_M = DC_KB * 32 - 1;
+const itag = new Int32Array(IC_M + 1).fill(-1), dtag = new Int32Array(DC_M + 1).fill(-1);
 let loadRd = 0, stBlock = -1;
 const tmStats = { imiss: 0, dmiss: 0, unc: 0, br: 0, lu: 0, st: 0 };
 function dAccess(a) {
   const u = a >>> 28;
   if (u === 4 || u === 0) {
-    const line = (a >>> 5) & 0x3FFFF, k = line & 255;
+    const line = (a >>> 5) & 0x3FFFF, k = line & DC_M;
     if (dtag[k] !== line) { dtag[k] = line; cycles += PEN_D; tmStats.dmiss++; }
   } else if (u === 5 || u === 1) { cycles += PEN_U; tmStats.unc++; }
   else if (u >= 8) cycles += 3;
@@ -393,7 +396,7 @@ function run() {
       let npc = (pc + 4) | 0;
       cycles++;
       if (TM) {
-        const line = (pc >>> 5) & 0x3FFFF, k = line & 255;
+        const line = (pc >>> 5) & 0x3FFFF, k = line & IC_M;
         if (itag[k] !== line) { itag[k] = line; cycles += PEN_I; tmStats.imiss++; }
         // load-use: the previous instruction was a load whose result is used now
         if (loadRd && (r1 === loadRd || (r2 === loadRd && (op === 0x33 || op === 0x23 || op === 0x63)))) { cycles++; tmStats.lu++; }

@@ -20,7 +20,9 @@
 `default_nettype none
 module cpu_mem #(
     parameter ROM_AW   = 11,            // ROM words: 2^11 = 8 KB
-    parameter ROM_FILE = "boot.hex"
+    parameter ROM_FILE = "boot.hex",
+    parameter IC_IDXW  = 9,             // cache lines: 2^IDXW x 32 bytes
+    parameter DC_IDXW  = 9
 )(
     input  wire        clk,
     input  wire        rst,
@@ -45,17 +47,17 @@ module cpu_mem #(
     output reg         sb_full,
     // ---------------- cache writes
     output reg         icw_de,          // icache data
-    output reg  [10:0] icw_didx,
+    output reg  [IC_IDXW+2:0] icw_didx,
     output reg  [31:0] icw_ddata,
     output reg         icw_te,
-    output reg  [7:0]  icw_tidx,
-    output reg  [11:0] icw_tdata,
+    output reg  [IC_IDXW-1:0] icw_tidx,
+    output reg  [19-IC_IDXW:0] icw_tdata,   // {valid, addr[30], addr[22:IC_IDXW+5]}
     output reg         dcw_de,
-    output reg  [10:0] dcw_didx,
+    output reg  [DC_IDXW+2:0] dcw_didx,
     output reg  [31:0] dcw_ddata,
     output reg         dcw_te,
-    output reg  [7:0]  dcw_tidx,
-    output reg  [11:0] dcw_tdata,
+    output reg  [DC_IDXW-1:0] dcw_tidx,
+    output reg  [19-DC_IDXW:0] dcw_tdata,
     // ---------------- SDRAM master
     output reg         m_req,
     output reg         m_we,
@@ -201,7 +203,7 @@ module cpu_mem #(
     reg [31:0] fa;                      // line / word address
     reg [3:0]  fcnt;                    // words received
     reg [3:0]  rcnt;                    // ROM addresses issued
-    reg [8:0]  icnt;                    // invalidation sweep
+    reg [10:0] icnt;                    // invalidation sweep
     reg        inv_i;
 
     wire wcb_need_flush = (wv[0] & wfl[0]) | (wv[1] & wfl[1]);
@@ -352,11 +354,11 @@ module cpu_mem #(
                     end
                 end else if (fence_p && !need_drain) begin
                     inv_i <= 1'b0;
-                    icnt  <= 9'd0;
+                    icnt  <= 11'd0;
                     st    <= S_INV;
                 end else if (ic_inval_req && !need_drain && !ic_inval_done) begin
                     inv_i <= 1'b1;
-                    icnt  <= 9'd0;
+                    icnt  <= 11'd0;
                     st    <= S_INV;
                 end
             end
@@ -366,17 +368,17 @@ module cpu_mem #(
                 if (m_ack) m_req <= 1'b0;
                 if (m_rvalid) begin
                     if (fill_i) begin
-                        icw_de <= 1'b1; icw_didx <= {fa[12:5], fcnt[2:0]}; icw_ddata <= m_rdata;
+                        icw_de <= 1'b1; icw_didx <= {fa[IC_IDXW+4:5], fcnt[2:0]}; icw_ddata <= m_rdata;
                     end else begin
-                        dcw_de <= 1'b1; dcw_didx <= {fa[12:5], fcnt[2:0]}; dcw_ddata <= m_rdata;
+                        dcw_de <= 1'b1; dcw_didx <= {fa[DC_IDXW+4:5], fcnt[2:0]}; dcw_ddata <= m_rdata;
                     end
                     fcnt <= fcnt + 4'd1;
                     if (fcnt == 4'd7) begin
                         if (fill_i) begin
-                            icw_te <= 1'b1; icw_tidx <= fa[12:5]; icw_tdata <= {1'b1, fa[30], fa[22:13]};
+                            icw_te <= 1'b1; icw_tidx <= fa[IC_IDXW+4:5]; icw_tdata <= {1'b1, fa[30], fa[22:IC_IDXW+5]};
                             ic_fill_done <= 1'b1;
                         end else begin
-                            dcw_te <= 1'b1; dcw_tidx <= fa[12:5]; dcw_tdata <= {1'b1, fa[30], fa[22:13]};
+                            dcw_te <= 1'b1; dcw_tidx <= fa[DC_IDXW+4:5]; dcw_tdata <= {1'b1, fa[30], fa[22:DC_IDXW+5]};
                             dreq_p <= 1'b0;
                         end
                         st <= S_IDLE;
@@ -389,17 +391,17 @@ module cpu_mem #(
                 if (rcnt != 4'd8) rcnt <= rcnt + 4'd1;
                 if (rcnt != 4'd0) begin
                     if (fill_i) begin
-                        icw_de <= 1'b1; icw_didx <= {fa[12:5], fcnt[2:0]}; icw_ddata <= rom_q;
+                        icw_de <= 1'b1; icw_didx <= {fa[IC_IDXW+4:5], fcnt[2:0]}; icw_ddata <= rom_q;
                     end else begin
-                        dcw_de <= 1'b1; dcw_didx <= {fa[12:5], fcnt[2:0]}; dcw_ddata <= rom_q;
+                        dcw_de <= 1'b1; dcw_didx <= {fa[DC_IDXW+4:5], fcnt[2:0]}; dcw_ddata <= rom_q;
                     end
                     fcnt <= fcnt + 4'd1;
                     if (fcnt == 4'd7) begin
                         if (fill_i) begin
-                            icw_te <= 1'b1; icw_tidx <= fa[12:5]; icw_tdata <= {1'b1, fa[30], fa[22:13]};
+                            icw_te <= 1'b1; icw_tidx <= fa[IC_IDXW+4:5]; icw_tdata <= {1'b1, fa[30], fa[22:IC_IDXW+5]};
                             ic_fill_done <= 1'b1;
                         end else begin
-                            dcw_te <= 1'b1; dcw_tidx <= fa[12:5]; dcw_tdata <= {1'b1, fa[30], fa[22:13]};
+                            dcw_te <= 1'b1; dcw_tidx <= fa[DC_IDXW+4:5]; dcw_tdata <= {1'b1, fa[30], fa[22:DC_IDXW+5]};
                             dreq_p <= 1'b0;
                         end
                         st <= S_IDLE;
@@ -459,12 +461,12 @@ module cpu_mem #(
             // ---------------- tag invalidation
             S_INV: begin
                 if (inv_i) begin
-                    icw_te <= 1'b1; icw_tidx <= icnt[7:0]; icw_tdata <= 12'd0;
+                    icw_te <= 1'b1; icw_tidx <= icnt[IC_IDXW-1:0]; icw_tdata <= 0;
                 end else begin
-                    dcw_te <= 1'b1; dcw_tidx <= icnt[7:0]; dcw_tdata <= 12'd0;
+                    dcw_te <= 1'b1; dcw_tidx <= icnt[DC_IDXW-1:0]; dcw_tdata <= 0;
                 end
-                icnt <= icnt + 9'd1;
-                if (icnt == 9'd255) begin
+                icnt <= icnt + 11'd1;
+                if (inv_i ? (icnt == (1 << IC_IDXW) - 1) : (icnt == (1 << DC_IDXW) - 1)) begin
                     if (inv_i) ic_inval_done <= 1'b1;
                     else       fence_p <= 1'b0;
                     st <= S_IDLE;

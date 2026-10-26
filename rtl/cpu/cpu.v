@@ -5,7 +5,9 @@
 module cpu #(
     parameter [31:0] RESET_PC = 32'h0000_0000,
     parameter ROM_AW   = 11,
-    parameter ROM_FILE = "boot.hex"
+    parameter ROM_FILE = "boot.hex",
+    parameter IC_IDXW  = 8,             // icache: 2^8 lines x 32 bytes = 8 KB
+    parameter DC_IDXW  = 9              // dcache: 16 KB
 )(
     input  wire        clk,
     input  wire        rst,
@@ -44,10 +46,13 @@ module cpu #(
     wire [3:0]  sb_strb;
 
     wire        icw_de, icw_te, dcw_de, dcw_te;
-    wire [10:0] icw_didx, dcw_didx;
+    wire [IC_IDXW+2:0]  icw_didx;
+    wire [DC_IDXW+2:0]  dcw_didx;
     wire [31:0] icw_ddata, dcw_ddata;
-    wire [7:0]  icw_tidx, dcw_tidx;
-    wire [11:0] icw_tdata, dcw_tdata;
+    wire [IC_IDXW-1:0]  icw_tidx;
+    wire [DC_IDXW-1:0]  dcw_tidx;
+    wire [19-IC_IDXW:0] icw_tdata;
+    wire [19-DC_IDXW:0] dcw_tdata;
 
     rv_core #(.RESET_PC(RESET_PC)) u_core (
         .clk(clk), .rst(rst),
@@ -63,7 +68,7 @@ module cpu #(
         .dbg_instret(instret)
     );
 
-    icache #(.IDXW(8)) u_ic (
+    icache #(.IDXW(IC_IDXW)) u_ic (
         .clk(clk), .en(ic_en), .addr(ic_addr), .rdata(ic_rdata), .hit(ic_hit),
         .dwe(icw_de), .dwidx(icw_didx), .dwdata(icw_ddata),
         .twe(icw_te), .twidx(icw_tidx), .twdata(icw_tdata)
@@ -71,15 +76,15 @@ module cpu #(
 
     // dcache data writes come from the store in M or from the refill
     // (never both: during a refill D is stalled and M is empty)
-    dcache #(.IDXW(8)) u_dc (
+    dcache #(.IDXW(DC_IDXW)) u_dc (
         .clk(clk), .raddr(dc_addr), .rdata(dc_rdata), .hit(dc_hit),
         .wbe(dcw_de ? 4'b1111 : dc_wbe),
-        .widx(dcw_de ? dcw_didx : dc_waddr[12:2]),
+        .widx(dcw_de ? dcw_didx : dc_waddr[DC_IDXW+4:2]),
         .wdata(dcw_de ? dcw_ddata : dc_wdata),
         .twe(dcw_te), .twidx(dcw_tidx), .twdata(dcw_tdata)
     );
 
-    cpu_mem #(.ROM_AW(ROM_AW), .ROM_FILE(ROM_FILE)) u_mem (
+    cpu_mem #(.ROM_AW(ROM_AW), .ROM_FILE(ROM_FILE), .IC_IDXW(IC_IDXW), .DC_IDXW(DC_IDXW)) u_mem (
         .clk(clk), .rst(rst),
         .ic_fill_req(ic_fill_req), .ic_fill_addr(ic_fill_addr), .ic_fill_done(ic_fill_done),
         .ic_inval_req(ic_inval_req), .ic_inval_done(ic_inval_done),

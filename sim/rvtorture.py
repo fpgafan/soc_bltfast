@@ -26,7 +26,7 @@ R = random.Random(a.seed)
 # x1 ra, x2 sp, x3 gp, x4 tp (unused), x26 = base of buffer A, x27 = base B
 POOL = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 28, 29, 30, 31]
 SAVED = [8, 9, 18, 19, 20, 21]          # s0, s1, s2..s5: preserved by every function
-BUFA, BUFB = 26, 27                     # BUFB = BUFA + 8 KB (same cache index)
+BUFA, BUFB = 26, 27                     # BUFB = BUFA + 16 KB (same index in 8 and 16 KB caches)
 lines = []
 lab = [0]
 
@@ -164,12 +164,12 @@ src = [
     "    li sp, 0x40600000",
     "    li ra, 0",
     "    li x26, 0x40200000",
-    "    li x27, 0x40202000",
+    "    li x27, 0x40204000",
     "    li x3, 0x80000000",
     "    li x4, 0x50210000",          # separate uncached area (not an alias of A/B)
     # known initial memory
     "    li t0, 0x40200000",
-    "    li t1, 0x40204000",
+    "    li t1, 0x40208000",
     "    li t2, 0x9E3779B9",
     "1:  sw t2, 0(t0)",
     "    slli t3, t2, 5",
@@ -198,18 +198,18 @@ if a.video:
 for k, reg in enumerate(POOL):
     src.append(f"    li x{reg}, {R.randint(-2**31, 2**31 - 1)}")
 if a.loops > 1:
-    src += [f"    li x1, {a.loops}", "    li x2, 0x40205000", "    sw x1, 0(x2)", "    li x2, 0x40600000", "main_loop:"]
+    src += [f"    li x1, {a.loops}", "    li x2, 0x40209000", "    sw x1, 0(x2)", "    li x2, 0x40600000", "main_loop:"]
 src += ["    " + l if not l.endswith(":") else l for l in main]
 if a.loops > 1:
-    src += ["    li x2, 0x40205000", "    lw x1, 0(x2)", "    addi x1, x1, -1", "    sw x1, 0(x2)",
+    src += ["    li x2, 0x40209000", "    lw x1, 0(x2)", "    addi x1, x1, -1", "    sw x1, 0(x2)",
             "    li x2, 0x40600000", "    bnez x1, main_loop", "    li x1, 0"]
 src += [
     # signature: registers into buffer C and CRC of A..C
-    "    li t0, 0x40204000",
+    "    li t0, 0x40208000",
 ] + [f"    sw x{reg}, {4 * k}(t0)" for k, reg in enumerate(POOL + [1, 2])] + [
     f"    li a0, {a.seed}",
     "    li a1, 0x40200000",
-    f"    li a2, {0x40204000 + 4 * (len(POOL) + 2)}",   # buffers + dumped registers
+    f"    li a2, {0x40208000 + 4 * (len(POOL) + 2)}",   # buffers + dumped registers
     "    call firma",
     "2:  j 2b",
     "",
