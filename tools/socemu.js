@@ -6,6 +6,10 @@
 //                        U = uncached load, B = mispredicted branch, S = store that does not
 //                        combine with the previous one (other 32-byte block); default 16,16,12,3,4
 //      [--cache I,D]     I-cache / D-cache size in KB for --timing (default 8,16, as in the RTL)
+//      [--blt O,R,P]     blitter time for --timing: O cycles per command + per row R cycles
+//                        + width/P (default 20,12,1: close to the board); 32-command queue (CMD waits when full)
+//      [--dump addr,len,file]  at the end, writes len bytes of memory from addr (SDRAM, hex) to a file
+//      PROFPC=N (environment, with --prof): also the N hottest instruction addresses
 'use strict';
 const fs = require('fs');
 const zlib = require('zlib');
@@ -26,6 +30,8 @@ for (let i = 2; i < args.length; i++) {
   else if (a === '--sdslow') opt.sdslow = +args[++i];
   else if (a === '--oplwav') opt.oplwav = args[++i];
   else if (a === '--cache') opt.cache = args[++i].split(',').map(Number);
+  else if (a === '--blt') opt.blt = args[++i].split(',').map(Number);
+  else if (a === '--dump') { const d = args[++i].split(','); opt.dump = { addr: parseInt(d[0], 16), len: parseInt(d[1]), file: d[2] }; }
   else if (a === '--timing') {
     opt.timing = [16, 16, 12, 3, 4];
     if (i + 1 < args.length && /^[0-9,]+$/.test(args[i + 1])) args[++i].split(',').forEach((v, k) => opt.timing[k] = +v);
@@ -56,6 +62,21 @@ let vidFb = 0, vidFbShown = 0, vidPending = 0, vidCtrl = 0, vidStride = 640, fra
 const pal = new Uint32Array(256);
 const blt = new Uint32Array(16);
 let bltCount = 0;
+// blitter queue timing (--timing): end cycle of each command in flight, and
+// the external interrupts (SYS_IRQ_PEND / SYS_IRQ_EN; vblank = bit 1, blitter = bit 3)
+let bltFin = [], bltIrqAt = -1, irqPend = 0, irqEn = 0;
+const [BLT_O, BLT_ROW, BLT_PPC] = opt.blt || [20, 12, 1];
+function bltPurge() { let k = 0; while (k < bltFin.length && bltFin[k] <= cycles) k++; if (k) bltFin.splice(0, k); }
+function bltQueue(cmd) {
+  if (!TM) { if (blt[15] & 1) irqPend |= 8; return; }
+  bltPurge();
+  if (bltFin.length >= 33) { cycles = bltFin[bltFin.length - 33]; bltPurge(); }   // queue full: the bus waits
+  const w = blt[8] & 0xFFFF, h = blt[8] >>> 16;
+  const cost = (cmd & 15) === 3 ? BLT_O + Math.max(w, h) : BLT_O + h * (BLT_ROW + Math.ceil(w / BLT_PPC));
+  const fin = Math.max(cycles, bltFin.length ? bltFin[bltFin.length - 1] : 0) + cost;
+  bltFin.push(fin);
+  if (blt[15] & 1) bltIrqAt = fin;
+}
 const ps2q = [];
 let padState = 0;
 let reset = false, ledEnd = false;
@@ -171,6 +192,7 @@ function ioLoad(a) {
       case 0x10: return cycles >>> 0;
       case 0x14: return Math.floor(cycles / 4294967296);
       case 0x18: return mtimecmpLo; case 0x1C: return mtimecmpHi;
+      case 0x24: return irqPend; case 0x28: return irqEn;
       default: return 0;
     }
   }
@@ -188,7 +210,11 @@ function ioLoad(a) {
   }
   if (a >= 0x80003000 && a < 0x80004000) return pal[(a >> 2) & 255];
   if (a >= 0x80004000 && a < 0x80005000) {
-    if ((a & 0xFF) === 0) return (bltCount << 16) >>> 0;
+    if ((a & 0xFF) === 0) {
+      bltPurge();
+      const n = Math.max(0, bltFin.length - 1);
+      return ((bltCount << 16) | (Math.min(n, 32) << 8) | (n >= 32 ? 2 : 0) | (bltFin.length ? 1 : 0)) >>> 0;
+    }
     return blt[(a >> 2) & 15];
   }
   if (a >= 0x80005000 && a < 0x80006000) {
@@ -226,6 +252,8 @@ function ioStore(a, v) {
       case 0x04: if (v === 0x2A) ledEnd = true; return;
       case 0x18: mtimecmpLo = v; return;
       case 0x1C: mtimecmpHi = v; return;
+      case 0x24: irqPend &= ~v; return;
+      case 0x28: irqEn = v; return;
       case 0x30: if (v === 0x5EB007) reset = true; return;
       case 0x34: sysScratch = v; return;
       default: return;
@@ -243,7 +271,7 @@ function ioStore(a, v) {
   if (a >= 0x80003000 && a < 0x80004000) { pal[(a >> 2) & 255] = v; return; }
   if (a >= 0x80004000 && a < 0x80005000) {
     const r = (a >> 2) & 15;
-    if (r === 14) blitExec(v); else blt[r] = v;
+    if (r === 14) { blitExec(v); bltQueue(v); } else blt[r] = r === 15 ? v & 1 : v;
     return;
   }
   if (a >= 0x80009000 && a < 0x8000A000) {
@@ -494,13 +522,16 @@ function run() {
       }
       if (prof && (cycles & 127) === 0) prof.push(pc >>> 0);
       pc = npc;
+      if (bltIrqAt >= 0 && cycles >= bltIrqAt) { irqPend |= 8; bltIrqAt = -1; }
       if ((mstatus & 8) && (mie & 0x80) && timerPending()) trap(0x80000007 | 0, pc);
+      else if ((mstatus & 8) && (mie & 0x800) && (irqPend & irqEn)) trap(0x8000000B | 0, pc);
     }
     if (cycles >= nextFrame) {
       nextFrame += FRAME_CYC;
       frame++;
       if (vidPending) { vidPending = 0; vidFbShown = vidFb; flips++; }
       else if (frame === 1) vidFbShown = vidFb;
+      irqPend |= 2;                                   // vertical blank
       while (keys.length && keys[0][0] <= frame) ps2q.push(keys.shift()[1]);
       while (pads.length && pads[0][0] <= frame) padState = pads.shift()[1];
       if (opt.shots.includes(frame)) shot('f' + String(frame).padStart(5, '0') + '.png');
@@ -526,6 +557,11 @@ if (TM) console.error(`timing model: I-misses ${tmStats.imiss}, D-misses ${tmSta
 if (misal) console.error('misaligned by pc:', [...misalPCs.entries()].slice(0, 20));
 if (diskDirty) fs.writeFileSync(imgf + '.out', disk);
 shot('final.png');
+if (opt.dump) {
+  const a = opt.dump.addr & 0x7FFFFF;
+  fs.writeFileSync(opt.dump.file, Buffer.from(m8.subarray(a, a + opt.dump.len)));
+  console.error(`dump: ${opt.dump.len} bytes from ${opt.dump.addr.toString(16)} -> ${opt.dump.file}`);
+}
 if (prof) {
   const out = require('child_process').execSync('riscv-none-elf-nm -n -S ' + opt.prof).toString().split('\n');
   const syms = [];
@@ -539,4 +575,10 @@ if (prof) {
   const tot = prof.length;
   console.error('profile (% of instructions):');
   for (const [f, n] of [...h.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25)) console.error((100 * n / tot).toFixed(1).padStart(6) + '%  ' + f);
+  if (process.env.PROFPC) {                       // the hottest addresses of one function
+    const hp = new Map();
+    for (const a of prof) hp.set(a, (hp.get(a) || 0) + 1);
+    console.error('hottest addresses:');
+    for (const [a, n] of [...hp.entries()].sort((x, y) => y[1] - x[1]).slice(0, +process.env.PROFPC)) console.error((100 * n / tot).toFixed(2).padStart(7) + '%  ' + a.toString(16));
+  }
 }

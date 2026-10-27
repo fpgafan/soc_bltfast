@@ -12,6 +12,9 @@ build.py - Builds the software for the bltfast SoC.
   python build.py doom                Doom (apps/doom, with newlib) -> build/doom.bin
   python build.py openjazz            OpenJazz (apps/open_jazz, C++ with newlib) -> build/openjazz.bin
   python build.py genesis             Genesis emulator (apps/genesis, PicoDrive core) -> build/genesis.bin
+  python build.py sonic1              Sonic 1 recompiled from s1disasm (apps/sonic1) -> build/sonic1.bin
+  python build.py sonic2              Sonic 2 recompiled from s2disasm (apps/sonic2) -> build/sonic2.bin
+  python build.py sonic3              Sonic 3 recompiled from skdisasm (apps/sonic3) -> build/sonic3.bin
   python build.py <app> --run         builds, loads over UART (tools/load.py) and opens the terminal
   python build.py --src <file> --run
                                       if the file is in apps/<app>/, builds that app;
@@ -256,15 +259,21 @@ def build_genesis():
              for f in sorted(glob.glob(os.path.join(d, "*.c")))]
     # names that clash with the SoC library
     ren = ["-Dgfx_init=mcd_gfx_init", "-Dcrc32=zlib_crc32"]
-    jobs += [(f, arch + inc + defs + ren + ["-O2", "-w"]) for f in sorted(core)]
+    # hot cores (see tools/genprof.py): -O3 measured +12 % on the board (GENESIS_HOT_OPT to change it)
+    hot = ("famec.c", "cz80.c", "ym2612.c", "draw2.c", "sn76496.c")
+    hot_opt = os.environ.get("GENESIS_HOT_OPT", "-O3").split()
+    jobs += [(f, arch + inc + defs + ren + (hot_opt if os.path.basename(f) in hot else ["-O2"]) + ["-w"])
+             for f in sorted(core)]
     hdrs = glob.glob(os.path.join(HERE, "lib", "*.h")) + glob.glob(os.path.join(pd, "pico", "*.h"))
 
     def cc(job):
         src, flags = job
         rel = os.path.relpath(src, HERE).replace(os.sep, "_").replace("/", "_")
         obj = os.path.join(ob, os.path.splitext(rel)[0] + ".o")
+        # the CPU cores #include their opcode files
+        inc_deps = glob.glob(os.path.join(os.path.dirname(src), "*.[ch]")) if src.endswith(("cz80.c", "famec.c")) else []
         if os.path.exists(obj) and os.path.getmtime(obj) > max([os.path.getmtime(src)] +
-                                                              [os.path.getmtime(h) for h in hdrs]):
+                                                              [os.path.getmtime(h) for h in hdrs + inc_deps]):
             return obj, None
         r = subprocess.run(["riscv-none-elf-gcc"] + flags + ["-c", src, "-o", obj],
                            capture_output=True, text=True)
@@ -284,6 +293,85 @@ def build_genesis():
     subprocess.check_call(["riscv-none-elf-objcopy", "-O", "binary", elf, binf])
     subprocess.check_call(["riscv-none-elf-size", elf])
     print(f"genesis.bin: {os.path.getsize(binf)} bytes")
+    return binf
+
+
+def build_sonic1():
+    """apps/sonic1: Sonic 1 recompiled from s1disasm (recomp/) + runtime. Objects in build/sonic1/."""
+    return build_sonic("sonic1", "s1disasm", "s1built.bin", "sonic.lst", "s1code.c", ["s1dac.c"], "s1syms.h", "S1_CFLAGS")
+
+
+def build_sonic2():
+    """apps/sonic2: Sonic 2 recompiled from s2disasm (recomp/) + runtime. Objects in build/sonic2/."""
+    return build_sonic("sonic2", "s2disasm", "s2built.bin", "s2.lst", "s2code.c", [], "s2syms.h", "S2_CFLAGS")
+
+
+def build_sonic3():
+    """apps/sonic3: Sonic 3 recompiled from skdisasm (recomp/) + runtime. Objects in build/sonic3/."""
+    # -Os for the recompiled code: 1.8 MB instead of 3.1 MB with -O2, which
+    # with the 2 MB ROM would not fit in the 6 MB of the program
+    return build_sonic("sonic3", "skdisasm", "s3built.bin", "s3.lst", "s3code.c", [], "s3syms.h", "S3_CFLAGS",
+                       gen_opt="-Os")
+
+
+def build_sonic(name, disasm, romname, lstname, codename, extra_gen, symsname, cflags_env, gen_opt="-O2"):
+    """Sonic 1/2: the 68000 code of the game recompiled (apps/<name>/recomp) + runtime."""
+    from concurrent.futures import ThreadPoolExecutor
+    d = os.path.join(HERE, "apps", name)
+    dis = os.path.join(d, disasm)
+    ob = os.path.join(B, name)
+    os.makedirs(ob, exist_ok=True)
+    rom, lst = os.path.join(dis, romname), os.path.join(dis, lstname)
+    if not (os.path.exists(rom) and os.path.exists(lst)):
+        sys.exit(f"build the disassembly first (apps/{name}/{disasm}: build.bat) to get {romname} and {lstname}")
+    gen = os.path.join(ob, codename)
+    deps = [rom, lst] + glob.glob(os.path.join(d, "recomp", "*.py"))
+    if not os.path.exists(gen) or os.path.getmtime(gen) < max(os.path.getmtime(f) for f in deps):
+        run([sys.executable, os.path.join(d, "recomp", "recomp.py"), rom, lst, ob])
+    with open(os.path.join(ob, "rom.S"), "w") as f:
+        f.write('.section .rodata.rom,"a"\n.balign 16\n.global ROM\nROM:\n.incbin "%s"\n' %
+                os.path.join(ob, "rom.bin").replace("\\", "/"))
+    arch = ["-march=rv32im_zicsr_zifencei", "-mabi=ilp32", "-g", "-ffunction-sections", "-fdata-sections"]
+    flags = arch + ["-I" + os.path.join(HERE, "lib"), "-I" + d, "-I" + ob, "-O2", "-Wall", "-Wextra",
+                    "-Wno-unused-parameter", "-ffreestanding", "-fno-builtin"] + os.environ.get(cflags_env, "").split()
+    jobs = [(os.path.join(HERE, "lib", f), flags) for f in
+            ("crt0.S", "trap.c", "lib.c", "sd.c", "fat.c", "gfx.c", "audio.c", "font8x8.c")]
+    jobs += [(f, flags) for f in sorted(glob.glob(os.path.join(d, "*.c")))]
+    jobs += [(os.path.join(ob, f), flags) for f in extra_gen]
+    jobs += [(os.path.join(ob, "rom.S"), flags),
+             (gen, [gen_opt if f == "-O2" else f for f in flags] + ["-Wno-unused-label", "-Wno-unused-variable", "-Wno-unused-but-set-variable"])]
+    hdrs = glob.glob(os.path.join(HERE, "lib", "*.h")) + glob.glob(os.path.join(d, "*.h")) + \
+        [os.path.join(ob, symsname)]
+    # other flags (S1_CFLAGS / S2_CFLAGS) than last time: everything again
+    fl_file = os.path.join(ob, "cflags.txt")
+    if not os.path.exists(fl_file) or open(fl_file).read() != " ".join(flags):
+        with open(fl_file, "w") as f:
+            f.write(" ".join(flags))
+    hdrs.append(fl_file)
+
+    def cc(job):
+        src, fl = job
+        obj = os.path.join(ob, "o_" + os.path.splitext(os.path.basename(src))[0] + ".o")
+        if os.path.exists(obj) and os.path.getmtime(obj) > max([os.path.getmtime(src)] +
+                                                              [os.path.getmtime(h) for h in hdrs]):
+            return obj, None
+        r = subprocess.run(["riscv-none-elf-gcc"] + fl + ["-c", src, "-o", obj], capture_output=True, text=True)
+        return obj, (os.path.basename(src) + ":\n" + r.stdout + r.stderr) if (r.returncode or r.stderr) else None
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
+        res = list(ex.map(cc, jobs))
+    for _, msg in res:
+        if msg: print(msg)
+    objs = [o for o, _ in res]
+    if not all(os.path.exists(o) for o in objs):
+        sys.exit("ERROR: compilation failed")
+    elf = os.path.join(B, name + ".elf")
+    run(["riscv-none-elf-gcc"] + arch + ["-nostartfiles", "-nostdlib"] + objs +
+        ["-T" + os.path.join(HERE, "lib", "app.ld"), "-Wl,--gc-sections", "-Wl,-Map," + os.path.join(B, name + ".map"),
+         "-Wl,--no-warn-rwx-segments", "-lgcc", "-o", elf])
+    binf = os.path.join(B, name + ".bin")
+    subprocess.check_call(["riscv-none-elf-objcopy", "-O", "binary", elf, binf])
+    subprocess.check_call(["riscv-none-elf-size", elf])
+    print(f"{name}.bin: {os.path.getsize(binf)} bytes")
     return binf
 
 
@@ -316,6 +404,12 @@ def main():
         binf = build_doom()
     elif a.what == "genesis" or (a.src and os.path.abspath(a.src).startswith(os.path.join(HERE, "apps", "genesis"))):
         binf = build_genesis()
+    elif a.what == "sonic1" or (a.src and os.path.abspath(a.src).startswith(os.path.join(HERE, "apps", "sonic1"))):
+        binf = build_sonic1()
+    elif a.what == "sonic2" or (a.src and os.path.abspath(a.src).startswith(os.path.join(HERE, "apps", "sonic2"))):
+        binf = build_sonic2()
+    elif a.what == "sonic3" or (a.src and os.path.abspath(a.src).startswith(os.path.join(HERE, "apps", "sonic3"))):
+        binf = build_sonic3()
     elif a.src:
         src = os.path.abspath(a.src)
         if not os.path.isfile(src):
