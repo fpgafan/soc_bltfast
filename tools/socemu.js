@@ -58,7 +58,7 @@ let mtimecmp = 0xFFFFFFFFFFFFn, mtimecmpLo = 0xFFFFFFFF, mtimecmpHi = 0xFFFFFFFF
 
 // peripherals
 let uartOut = '', sysScratch = 0;
-let vidFb = 0, vidFbShown = 0, vidPending = 0, vidCtrl = 0, vidStride = 640, frame = 0;
+let vidFb = 0, vidFbShown = 0, vidPending = 0, vidCtrl = 0, vidStride = 640, vidScan = 0, frame = 0;
 const pal = new Uint32Array(256);
 const blt = new Uint32Array(16);
 let bltCount = 0;
@@ -204,7 +204,7 @@ function ioLoad(a) {
     switch (a & 0xFF) {
       case 0x00: return vidCtrl; case 0x04: return vidFb; case 0x08: return vidStride;
       case 0x24: return (frame << 20) >>> 0;
-      case 0x28: return vidPending;
+      case 0x28: return vidPending; case 0x2C: return vidScan;
       default: return 0;
     }
   }
@@ -265,6 +265,7 @@ function ioStore(a, v) {
       case 0x00: vidCtrl = v; return;
       case 0x04: vidFb = v; vidPending = 1; return;
       case 0x08: vidStride = v; return;
+      case 0x2C: vidScan = v & 15; return;
       default: return;
     }
   }
@@ -382,11 +383,15 @@ function chunk(t, d) { const l = Buffer.alloc(4); l.writeUInt32BE(d.length); con
 function shot(name) {
   const W = 640, H = 480, raw = Buffer.alloc((W * 3 + 1) * H);
   const base = vidFbShown & 0x7FFFFF;
+  // scanlines (VID_SCANLINE) as in video.v
+  const dim = [c => c >> 1, c => c - (c >> 2), c => c >> 2, c => 0][(vidScan >> 1) & 3];
   for (let y = 0; y < H; y++) {
     raw[y * (W * 3 + 1)] = 0;
+    const dk = (vidScan & 1) && ((y ^ (vidScan >> 3)) & 1);
     for (let xx = 0; xx < W; xx++) {
       const c = pal[m8[(base + y * vidStride + xx) & 0x7FFFFF]], o = y * (W * 3 + 1) + 1 + xx * 3;
       raw[o] = (c >> 16) & 255; raw[o + 1] = (c >> 8) & 255; raw[o + 2] = c & 255;
+      if (dk) { raw[o] = dim(raw[o]); raw[o + 1] = dim(raw[o + 1]); raw[o + 2] = dim(raw[o + 2]); }
     }
   }
   const ih = Buffer.alloc(13); ih.writeUInt32BE(W, 0); ih.writeUInt32BE(H, 4); ih[8] = 8; ih[9] = 2;

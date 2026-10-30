@@ -25,6 +25,11 @@
 //   +0x20 RASTER    line of the RASTER interrupt
 //   +0x24 STATUS    R: [9:0] line being prepared, [16] vblank, [31:20] frames
 //   +0x28 PENDING   R: [0] register change pending
+//   +0x2C SCANLINE  [0] enable, [2:1] dimming of the darkened lines
+//                   (0: 50%, 1: 75%, 2: 25% brightness, 3: black),
+//                   [3] parity (0: odd lines 1,3,5.., 1: even lines)
+//                   Separate from CTRL so programs that rewrite CTRL keep
+//                   the setting; only a reset clears it.
 //   Palette: 0x8000_3000 + 4*i = 0x00RRGGBB (write only)
 // ============================================================================
 `default_nettype none
@@ -71,6 +76,7 @@ module video (
     reg [10:0] r_wh;
     reg [7:0]  r_border;
     reg [9:0]  r_raster;
+    reg [3:0]  r_scan;
     reg        r_dirty;
     // active copy (used while preparing lines)
     reg        c_en;
@@ -196,7 +202,7 @@ module video (
             m_req <= 1'b0;
             r_en <= 1'b1; r_live <= 1'b0; r_hdmi <= 1'b1; r_base <= 23'h60_0000; r_stride <= 14'd640;
             r_sx <= 13'd0; r_sy <= 11'd0; r_ww <= 4'd0; r_wh <= 11'd0; r_border <= 8'd0;
-            r_raster <= 10'd0; r_dirty <= 1'b1;
+            r_raster <= 10'd0; r_scan <= 4'd0; r_dirty <= 1'b1;
             c_en <= 1'b0;
             cur_line <= 10'd0; in_vblank <= 1'b0; frames <= 12'd0;
         end else begin
@@ -212,6 +218,7 @@ module video (
                 4'h6: r_wh     <= wd[10:0];
                 4'h7: r_border <= wd[7:0];
                 4'h8: r_raster <= wd[9:0];
+                4'hB: r_scan   <= wd[3:0];
                 default: ;
                 endcase
                 if (a[5:2] <= 4'h7) r_dirty <= 1'b1;
@@ -326,6 +333,7 @@ module video (
         4'h8: rd <= {22'd0, r_raster};
         4'h9: rd <= {frames, 3'd0, in_vblank, 6'd0, cur_line};
         4'hA: rd <= {31'd0, r_dirty};
+        4'hB: rd <= {28'd0, r_scan};
         default: rd <= 32'd0;
         endcase
     end
@@ -379,8 +387,23 @@ module video (
         pq   <= pal[idx2];
         vis3 <= vis2; hs3 <= hs2; vs3 <= vs2;
     end
+    // scanlines: quasi-static register, synchronized to the pix domain;
+    // vc3 is aligned with pq
+    reg [3:0] scan_s1, scan_s2;
+    always @(posedge clk_pix) begin scan_s1 <= r_scan; scan_s2 <= scan_s1; end
+    function [7:0] dim(input [7:0] c, input [1:0] l);
+        case (l)
+        2'd0: dim = {1'b0, c[7:1]};
+        2'd1: dim = c - {2'b00, c[7:2]};
+        2'd2: dim = {2'b00, c[7:2]};
+        default: dim = 8'd0;
+        endcase
+    endfunction
+    wire        dark = scan_s2[0] & (vc3[0] ^ scan_s2[3]);
+    wire [23:0] pqs  = dark ? {dim(pq[23:16], scan_s2[2:1]), dim(pq[15:8], scan_s2[2:1]),
+                               dim(pq[7:0], scan_s2[2:1])} : pq;
     always @(posedge clk_pix) begin
-        rgb   <= vis3 ? pq : 24'd0;
+        rgb   <= vis3 ? pqs : 24'd0;
         de    <= vis3;
         hsync <= hs3;
         vsync <= vs3;

@@ -66,9 +66,16 @@
 #define VID_RASTER     REG32(VID_BASE + 0x20)
 #define VID_STATUS     REG32(VID_BASE + 0x24)
 #define VID_PENDING    REG32(VID_BASE + 0x28)
+#define VID_SCANLINE   REG32(VID_BASE + 0x2C)
 #define VID_EN         (1u << 0)
 #define VID_LIVE       (1u << 1)
 #define VID_HDMI       (1u << 2)
+#define VID_SL_EN      (1u << 0)         // VID_SCANLINE: darken every other line
+#define VID_SL_50      (0u << 1)         //   brightness of the darkened lines
+#define VID_SL_75      (1u << 1)
+#define VID_SL_25      (2u << 1)
+#define VID_SL_BLACK   (3u << 1)
+#define VID_SL_EVEN    (1u << 3)         //   darken even lines instead of odd
 #define PALETTE        ((volatile uint32_t *)0x80003000u)   // 256 x 0x00RRGGBB
 
 // ---------------------------------------------------------------- blitter

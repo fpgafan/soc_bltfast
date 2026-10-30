@@ -2,7 +2,7 @@
 // tb_vid.v - video + hdmi_tx + sdram_ctrl + SDRAM model
 //   Initial framebuffer (+init), random palette, 48 kHz audio samples
 //   (counter), and dump of the TMDS words of a complete frame (+out).
-//   +sx=<n> +sy=<n> scroll ; +wrapw=<n> +wraph=<n> ; +stride=<n>
+//   +sx=<n> +sy=<n> scroll ; +wrapw=<n> +wraph=<n> ; +stride=<n> ; +scan=<n>
 // ============================================================================
 `timescale 1ns/1ps
 module tb_vid;
@@ -80,7 +80,7 @@ module tb_vid;
 
     reg [8*256-1:0] finit, fout, fpal;
     reg [31:0] palv [0:255];
-    integer i, fo, sx = 0, sy = 0, ww = 0, wh = 0, stride = 640, frames = 0;
+    integer i, fo, sx = 0, sy = 0, ww = 0, wh = 0, stride = 640, scan = 0, frames = 0;
     initial begin
         if ($value$plusargs("init=%s", finit)) $readmemh(finit, u_mem.mem);
         if (!$value$plusargs("out=%s", fout)) fout = "tmds.txt";
@@ -90,12 +90,13 @@ module tb_vid;
         if ($value$plusargs("wrapw=%d", ww)) ;
         if ($value$plusargs("wraph=%d", wh)) ;
         if ($value$plusargs("stride=%d", stride)) ;
+        if ($value$plusargs("scan=%d", scan)) ;
         repeat (4) @(posedge clk);
         rst <= 0;
         repeat (20) @(posedge cp);
         rst_pix <= 0;
         for (i = 0; i < 256; i = i + 1) wp(i, palv[i]);
-        wr(6'h08, stride); wr(6'h0C, sx); wr(6'h10, sy); wr(6'h14, ww); wr(6'h18, wh);
+        wr(6'h08, stride); wr(6'h0C, sx); wr(6'h10, sy); wr(6'h14, ww); wr(6'h18, wh); wr(6'h2C, scan);
         wr(6'h00, 32'h5);
         // the first complete frame applies the registers; the second one is recorded
         @(posedge ivb); @(posedge ivb);

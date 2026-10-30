@@ -6,10 +6,12 @@
 //  0x4000_0000 just like the ROM would, so any program built with build.py
 //  works unchanged. The menu itself runs from 0x4078_0000 (see menu.ld).
 //
-//  Controls: pads (Up/Down, Left/Right = page, A/B/Start = boot, Select =
-//  re-read the card), PS/2 keyboard (arrows, PgUp/PgDn, Home/End, Enter,
-//  R = re-read) or the UART terminal (w/s or arrows, Enter, r; a number +
-//  Enter boots that entry directly).
+//  Controls: pads (Up/Down, Left/Right = page, A/Start = boot, B =
+//  scanlines, Select = re-read the card), PS/2 keyboard (arrows, PgUp/PgDn,
+//  Home/End, Enter, L = scanlines, R = re-read) or the UART terminal (w/s or
+//  arrows, Enter, l, r; a number + Enter boots that entry directly).
+//  The scanline setting (VID_SCANLINE) is not touched by start(), so it
+//  stays on for the program that gets booted.
 // ============================================================================
 #include "lib.h"
 #include "gfx.h"
@@ -120,7 +122,21 @@ static void print_list(void)
     printf("\nbootmenu: %d program(s) on the SD\n", nfiles);
     for (int i = 0; i < nfiles; i++) printf("  %d  %s  %u bytes\n", i + 1, files[i].name, files[i].size);
     if (status[0]) printf("  %s\n", status);
-    printf("w/s or arrows + Enter, a number + Enter, r = re-read the card\n");
+    printf("w/s or arrows + Enter, a number + Enter, r = re-read the card, l = scanlines\n");
+}
+
+// ---------------------------------------------------------------- scanlines
+// off, then from light to strong
+static const uint32_t scan_reg[] = { 0, VID_SL_EN | VID_SL_75, VID_SL_EN | VID_SL_50,
+                                     VID_SL_EN | VID_SL_25, VID_SL_EN | VID_SL_BLACK };
+static const char *const scan_name[] = { "off", "75%", "50%", "25%", "black" };
+static int scan_mode;
+
+static void scan_next(void)
+{
+    scan_mode = (scan_mode + 1) % 5;
+    VID_SCANLINE = scan_reg[scan_mode];
+    printf("bootmenu: scanlines %s\n", scan_name[scan_mode]);
 }
 
 // ---------------------------------------------------------------- screen
@@ -171,7 +187,9 @@ static void draw_menu(void)
         gfx_text_scaled(LIST_X, fy, t, C_DIM, -1, 2);
     }
     gfx_text(LIST_X, SCR_H - 28, "Up/Down: choose   Left/Right: page   A / Start / Enter: boot", C_DIM, -1);
-    gfx_text(LIST_X, SCR_H - 16, "Select / R: re-read the card", C_DIM, -1);
+    char h[64] = "Select / R: re-read the card   B / L: scanlines ";
+    scopy(h + strlen(h), scan_name[scan_mode], 8);
+    gfx_text(LIST_X, SCR_H - 16, h, C_DIM, -1);
     gfx_flip();
 }
 
@@ -235,7 +253,7 @@ static void boot(int i)
 }
 
 // ---------------------------------------------------------------- input
-enum { K_NONE, K_UP, K_DOWN, K_PGUP, K_PGDN, K_HOME, K_END, K_OK, K_RESCAN, K_NUM };
+enum { K_NONE, K_UP, K_DOWN, K_PGUP, K_PGDN, K_HOME, K_END, K_OK, K_RESCAN, K_SCAN, K_NUM };
 
 static int ps2_key(void)
 {
@@ -256,6 +274,7 @@ static int ps2_key(void)
                 case 0x1D: k = K_UP; break;   case 0x1B: k = K_DOWN; break;   // W / S
                 case 0x5A: case 0x29: k = K_OK; break;                        // Enter / space
                 case 0x2D: k = K_RESCAN; break;                               // R
+                case 0x4B: k = K_SCAN; break;                                 // L
             }
         }
         ext = rel = 0;
@@ -279,7 +298,8 @@ static int pad_key(void)
     if (hit & PAD_DOWN)  return K_DOWN;
     if (hit & PAD_LEFT)  return K_PGUP;
     if (hit & PAD_RIGHT) return K_PGDN;
-    if (hit & (PAD_A | PAD_B | PAD_START)) return K_OK;
+    if (hit & (PAD_A | PAD_START)) return K_OK;
+    if (hit & PAD_B) return K_SCAN;
     if (hit & PAD_SELECT) return K_RESCAN;
     return K_NONE;
 }
@@ -306,6 +326,7 @@ static int uart_key(void)
         if (c == 'w' || c == 'k') return K_UP;
         if (c == 's' || c == 'j') return K_DOWN;
         if (c == 'r') return K_RESCAN;
+        if (c == 'l') return K_SCAN;
     }
     return K_NONE;
 }
@@ -340,6 +361,7 @@ int main(void)
         case K_HOME: move(0); break;
         case K_END:  move(nfiles - 1); break;
         case K_RESCAN: scan(); print_list(); break;
+        case K_SCAN: scan_next(); break;
         case K_NUM:
             uart_puts("\n");
             if (num_buf <= nfiles) { move(num_buf - 1); boot(sel); }

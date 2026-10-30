@@ -2,7 +2,7 @@
 """
 run_vid.py - Video + HDMI test: records one TMDS frame from the RTL and decodes it.
 
-  python run_vid.py [seed] [--sx=N --sy=N --wrapw=N --wraph=N --stride=N]
+  python run_vid.py [seed] [--sx=N --sy=N --wrapw=N --wraph=N --stride=N --scan=N]
 
 It checks: structure (525 lines, 480 video periods of 640 pixels with
 preamble and guards, syncs), pixels == palette[framebuffer] with the
@@ -50,6 +50,10 @@ def ecc(bits):
     return e
 
 
+def scan_dim(c, l):
+    return (c >> 1, c - (c >> 2), c >> 2, 0)[l]
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     opt = dict(a[2:].split("=") for a in sys.argv[1:] if a.startswith("--") and "=" in a)
@@ -57,6 +61,7 @@ def main():
     sx, sy = int(opt.get("sx", 0)), int(opt.get("sy", 0))
     ww, wh = int(opt.get("wrapw", 0)), int(opt.get("wraph", 0))
     stride = int(opt.get("stride", 640))
+    scan = int(opt.get("scan", 0))
     rng = random.Random(seed)
     fb = bytearray(rng.randrange(256) for _ in range(1 << 20))
     pal = [rng.randrange(1 << 24) for _ in range(256)]
@@ -72,7 +77,7 @@ def main():
                                             "sim/models/sdram_model.v", "sim/models/gowin_prims.v", "sim/tb/tb_vid.v")]
     subprocess.check_call(["iverilog", "-g2012", "-DSIM", "-o", vvp, "-s", "tb_vid"] + srcs)
     r = subprocess.run(["vvp", "-n", vvp, "+init=vid_init.hex", "+pal=vid_pal.hex", "+out=tmds.txt",
-                        f"+sx={sx}", f"+sy={sy}", f"+wrapw={ww}", f"+wraph={wh}", f"+stride={stride}"],
+                        f"+sx={sx}", f"+sy={sy}", f"+wrapw={ww}", f"+wraph={wh}", f"+stride={stride}", f"+scan={scan}"],
                        cwd=BUILD, capture_output=True, text=True)
     print([l for l in r.stdout.splitlines() if "VID" in l])
     words = [int(l, 16) for l in open(os.path.join(BUILD, "tmds.txt"))]
@@ -139,6 +144,8 @@ def main():
         for x in range(640):
             col = ((sx + x) & (wrapb - 1)) if wrapb else sx + x
             e = pal[fb[(row * stride + col) & 0xFFFFF]]
+            if scan & 1 and (y ^ (scan >> 3)) & 1:
+                e = sum(scan_dim((e >> s) & 0xFF, (scan >> 1) & 3) << s for s in (0, 8, 16))
             if px[x] != e:
                 bad += 1
                 if bad == 1:
@@ -240,7 +247,7 @@ def main():
         err("number of samples out of range")
     if errs:
         print(f"FAIL: {len(errs)} errors"); sys.exit(1)
-    print(f"PASS seed={seed} sx={sx} sy={sy} wrapw={ww} wraph={wh} stride={stride}")
+    print(f"PASS seed={seed} sx={sx} sy={sy} wrapw={ww} wraph={wh} stride={stride} scan={scan}")
 
 
 if __name__ == "__main__":

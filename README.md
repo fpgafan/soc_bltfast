@@ -73,9 +73,11 @@ a program chooser. Copy it to the root of the microSD together with the programs
 (e.g. `DOOM.BIN`, `PACMAN.BIN`): it lists every `.BIN` file of the root directory and
 loads the chosen one at `0x4000_0000` exactly as the ROM would, so programs need no
 changes. The menu runs from `0x4078_0000` (the stub at the start of the image moves it
-there), so programs of up to 6 MB can be loaded. Controls: pad (D-pad, A/B/Start to
-boot, Select to re-read the card), PS/2 keyboard (arrows, PgUp/PgDn, Home/End, Enter, R)
-or the UART terminal (w/s or arrows, Enter, `r`, or the entry number + Enter).
+there), so programs of up to 6 MB can be loaded. Controls: pad (D-pad, A/Start to
+boot, B for scanlines, Select to re-read the card), PS/2 keyboard (arrows, PgUp/PgDn,
+Home/End, Enter, L for scanlines, R) or the UART terminal (w/s or arrows, Enter, `l`,
+`r`, or the entry number + Enter). The scanline mode (off, 75 %, 50 %, 25 %, black)
+stays on for the program that gets booted.
 
 ## Memory map
 
@@ -106,6 +108,9 @@ All the names are in `sw/lib/soc.h`. Summary:
 - **Video `0x8000_2000`**: CTRL (EN, LIVE, HDMI), FB_BASE, STRIDE, SCROLL_X/Y,
   WRAP_W (ring of 2^n·256 bytes), WRAP_H (rows), BORDER, RASTER, STATUS,
   PENDING. Changes are applied at the start of the frame (or per line with LIVE).
+  SCANLINE (`+0x2C`): hardware scanlines on the output, `[0]` enable, `[2:1]`
+  brightness of the darkened lines (50 / 75 / 25 % / black), `[3]` even lines
+  instead of odd; separate from CTRL so programs keep it, cleared only by a reset.
   Palette at `0x8000_3000` (256 × `0x00RRGGBB`).
 - **Blitter `0x8000_4000`**: DST/DSTRIDE/CLIP0/CLIP1 (destination surface),
   SRC/SSTRIDE, XY, SIZE, COLOR (fg, bg, key, paloff), U0/V0/DU/DV (16.16),
