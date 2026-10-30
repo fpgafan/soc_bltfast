@@ -219,13 +219,14 @@ python build.py doom          # -> build/doom.bin (~590 KB)
 python build.py doom --run    # load over UART
 ```
 
-**microSD** (FAT32/FAT16, root directory, 8.3 names): copy the IWAD
+**microSD** (FAT32/FAT16, 8.3 names): copy the files to a `doom` folder (or to the
+root, if there is no such folder): the IWAD
 (`DOOM1.WAD`, `DOOM.WAD`, `DOOM2.WAD`, `PLUTONIA.WAD` or `TNT.WAD`; if there are
 several, the first of doom2, plutonia, tnt, doom, doom1 is used, unless
 `-iwad` is given) and, to boot without a PC, `build/doom.bin`
 as `BOOT.BIN`. Optional: `DOOMARGS.TXT` with arguments, e.g.
 `-iwad doom.wad -warp 1 3 -skill 4` or `-file mymod.wad`. Doom stores
-`DEFAULT.CFG`, `DOOMGENE.CFG` and the saved games `DOOMSAVn.DSG` on the SD.
+`DEFAULT.CFG`, `DOOMGENE.CFG` and the saved games `DOOMSAVn.DSG` in the same folder.
 
 **Music**: with the OPL2 it sounds like DOS with a Sound Blaster (same
 FM instruments, the ones in the `GENMIDI` lump). `-synth` in `DOOMARGS.TXT` uses
@@ -261,7 +262,7 @@ with CS active, so "no microSD card" no longer appears after a reset.
 with a minimal SDL 1.2 layer for the SoC: drawing with the blitter (DMA),
 triple-buffered 640×480 output, 22050 Hz audio resampled by the sound engine,
 pad and PS/2 keyboard. The game data of the original *Jazz Jackrabbit* goes
-in the root of the microSD. Details in `sw/apps/open_jazz/README.md`.
+in a `jazz_jackrabbit` folder of the microSD (or in the root). Details in `sw/apps/open_jazz/README.md`.
 
 ```
 cd sw

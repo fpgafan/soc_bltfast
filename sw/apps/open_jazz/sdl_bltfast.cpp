@@ -35,7 +35,7 @@ static bool blt_pending;
 static const SDL_Surface *blt_dst;  // destination programmed in the blitter
 static bool use_blitter = true;     // JAZZ.TXT "draw=cpu" draws with the CPU instead
 
-// JAZZ.TXT in the root of the microSD: "draw=blitter" (default) or "draw=cpu"
+// JAZZ.TXT next to the game data: "draw=blitter" (default) or "draw=cpu"
 static void read_config(void)
 {
     fat_file f;
@@ -337,6 +337,8 @@ int SDL_Init(Uint32 flags)
             lib_printf("WARNING: could not mount microSD (error %d)\n", r);
         } else {
             lib_printf("microSD mounted successfully!\n");
+            // data, JAZZ.TXT and saves in the "jazz_jackrabbit" folder, or the root
+            if (fat_chdir("jazz_jackrabbit") == 0) lib_printf("folder: jazz_jackrabbit\n");
             read_config();
         }
     }

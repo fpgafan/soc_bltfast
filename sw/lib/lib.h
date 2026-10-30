@@ -50,7 +50,8 @@ int      fat_seek(fat_file *f, uint32_t pos);
 int      fat_map(fat_file *f, uint32_t *map, uint32_t n); // clusters stored (fast seek)
 uint32_t fat_cluster_bytes(void);
 uint32_t fat_file_lba(const fat_file *f);
-// writing (root directory only): fat_close stores size and cluster in the directory
+int      fat_chdir(const char *path);                  // "doom", "/"; long names too (not in the ROM)
+// writing (current directory): fat_close stores size and cluster in the directory
 int      fat_create(fat_file *f, const char *name83);    // creates or truncates it
 int      fat_write(fat_file *f, const void *src, uint32_t len);
 int      fat_close(fat_file *f);

@@ -6,7 +6,8 @@
 //         flipped at frame start. Doom's palette goes straight to the video one.
 //  Input: PS/2 keyboard (set 2) and SNES/NES pads (see table below);
 //         S1 = Esc, S2 = Enter.
-//  Files: root directory of the microSD (sys_bltfast.c). Optional
+//  Files: "doom" folder of the microSD, or the root if there is none
+//         (sys_bltfast.c). Optional
 //         arguments in DOOMARGS.TXT (e.g. "-iwad doom2.wad -warp 1").
 // ============================================================================
 #include <stdio.h>
@@ -391,6 +392,9 @@ int main(void)
               r == -6 ? "it is NTFS: format it as FAT32" :
                         "the partition is not FAT16/FAT32");
     }
+    // the WAD, DOOMARGS.TXT and the savegames go in the "doom" folder if there
+    // is one, otherwise in the root
+    if (fat_chdir("doom") == 0) say("folder: doom", 7);
     int argc = read_args(argv);
     if (argc > 1) {
         char l[80];

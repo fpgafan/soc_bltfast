@@ -1,7 +1,9 @@
 // ============================================================================
-// fat.c - Minimal FAT32 (and FAT16): root directory, 8.3 names
+// fat.c - Minimal FAT32 (and FAT16): one directory at a time, 8.3 names
 //   sequential read (used by the ROM) + seeking, writing, creating,
-//   deleting and renaming (for programs; the ROM does not link them)
+//   deleting and renaming (for programs; the ROM does not link them).
+//   fat_chdir enters a subdirectory, found by its long or 8.3 name; every
+//   other call works in the current directory (the root after fat_mount).
 // ============================================================================
 #include "lib.h"
 
@@ -12,6 +14,11 @@ static int      is32;
 static uint32_t cached_fat = 0xFFFFFFFF;
 static uint32_t nfat, fsz, nclus, fsinfo_lba;   // for writing
 static uint32_t ent_lba, ent_off;               // entry dir_walk is looking at
+static uint32_t cwd_clus;                       // current directory (0 = root)
+#ifndef BOOTROM
+static char     lfn[64];                        // long name of the entry (ASCII, "" if none)
+static uint8_t  lfn_sum;
+#endif
 
 #define EOC 0x0FFFFFF8u           // clusters >= EOC: end of chain
 
@@ -81,6 +88,7 @@ int fat_mount(void)
     fsinfo_lba = is32 ? part + rd16(sec + 48) : 0;
     nclus = (part + tot - data_lba) / spc;
     cached_fat = 0xFFFFFFFF;
+    cwd_clus = 0;
     return 0;
 }
 
@@ -96,11 +104,46 @@ static uint32_t next_clus(uint32_t c)
 
 static uint32_t clus_lba(uint32_t c) { return data_lba + (c - 2) * spc; }
 
-// walks the root directory; cb returns 1 to stop (ent_lba/ent_off = the entry)
+// first sectors of the current directory: c = 0 for the fixed FAT16 root
+static uint32_t dir_first(uint32_t *lba, uint32_t *n)
+{
+    uint32_t c = cwd_clus ? cwd_clus : root_clus;
+    if (c) { *lba = clus_lba(c); *n = spc; } else { *lba = root_lba; *n = (root_ents * 32 + 511) / 512; }
+    return c;
+}
+
+#ifndef BOOTROM
+// accumulates a long-name entry (13 UCS-2 characters, kept as ASCII)
+static void lfn_add(const uint8_t *e)
+{
+    static const uint8_t pos[13] = { 1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30 };
+    if (e[0] & 0x40) { memset(lfn, 0, sizeof(lfn)); lfn_sum = e[13]; }
+    else if (e[13] != lfn_sum) { lfn[0] = 0; return; }
+    int base = ((e[0] & 0x1F) - 1) * 13;
+    for (int k = 0; k < 13; k++) {
+        int i = base + k;
+        uint8_t lo = e[pos[k]], hi = e[pos[k] + 1];
+        if (i < 0 || i >= (int)sizeof(lfn) - 1 || (lo == 0xFF && hi == 0xFF)) continue;
+        lfn[i] = hi ? '?' : (char)lo;
+    }
+}
+
+static uint8_t sfn_sum(const uint8_t *e)
+{
+    uint8_t s = 0;
+    for (int i = 0; i < 11; i++) s = (uint8_t)(((s & 1) << 7) + (s >> 1) + e[i]);
+    return s;
+}
+#endif
+
+// walks the current directory; cb returns 1 to stop (ent_lba/ent_off = the
+// entry; lfn = its long name, if it has one)
 static int dir_walk(int (*cb)(const uint8_t *e, void *ctx), void *ctx)
 {
-    uint32_t c = root_clus, lba, n;
-    if (is32) { lba = clus_lba(c); n = spc; } else { lba = root_lba; n = (root_ents * 32 + 511) / 512; }
+    uint32_t lba, n, c = dir_first(&lba, &n);
+#ifndef BOOTROM
+    lfn[0] = 0;
+#endif
     for (;;) {
         for (uint32_t s = 0; s < n; s++) {
             if (sd_read(lba + s, sec)) return -1;
@@ -108,12 +151,24 @@ static int dir_walk(int (*cb)(const uint8_t *e, void *ctx), void *ctx)
             for (int i = 0; i < 512; i += 32) {
                 const uint8_t *e = sec + i;
                 if (e[0] == 0x00) return 0;
-                if (e[0] == 0xE5 || (e[11] & 0x0F) == 0x0F || (e[11] & 0x08)) continue;
+#ifndef BOOTROM
+                if (e[0] != 0xE5 && (e[11] & 0x3F) == 0x0F) { lfn_add(e); continue; }
+                if (lfn[0] && lfn_sum != sfn_sum(e)) lfn[0] = 0;
+#endif
+                if (e[0] == 0xE5 || (e[11] & 0x0F) == 0x0F || (e[11] & 0x08)) {
+#ifndef BOOTROM
+                    lfn[0] = 0;
+#endif
+                    continue;
+                }
                 ent_lba = lba + s; ent_off = (uint32_t)i;
                 if (cb(e, ctx)) return 1;
+#ifndef BOOTROM
+                lfn[0] = 0;
+#endif
             }
         }
-        if (!is32) return 0;
+        if (!c) return 0;
         c = next_clus(c);
         if (c >= EOC) return 0;
         lba = clus_lba(c); n = spc;
@@ -336,11 +391,11 @@ int fat_close(fat_file *f)
     return sd_write(f->dir_lba, sec);
 }
 
-// finds a free root entry (on FAT32 it grows the root if full)
+// finds a free entry in the current directory (grows it if full, except
+// the fixed FAT16 root)
 static int dir_slot(void)
 {
-    uint32_t c = root_clus, lba, n;
-    if (is32) { lba = clus_lba(c); n = spc; } else { lba = root_lba; n = (root_ents * 32 + 511) / 512; }
+    uint32_t lba, n, c = dir_first(&lba, &n);
     for (;;) {
         for (uint32_t s = 0; s < n; s++) {
             if (sd_read(lba + s, sec)) return -1;
@@ -348,7 +403,7 @@ static int dir_slot(void)
             for (int i = 0; i < 512; i += 32)
                 if (sec[i] == 0x00 || sec[i] == 0xE5) { ent_lba = lba + s; ent_off = (uint32_t)i; return 0; }
         }
-        if (!is32) return -1;                        // FAT16: fixed-size root
+        if (!c) return -1;                           // FAT16: fixed-size root
         uint32_t nx = next_clus(c);
         if (nx >= EOC) {
             nx = alloc_clus(c);
@@ -408,3 +463,58 @@ int fat_rename(const char *from83, const char *to83)
     memcpy(sec + f.dir_off, to83, 11);
     return sd_write(f.dir_lba, sec);
 }
+
+#ifndef BOOTROM
+// ---------------------------------------------------------------- directories
+// case-insensitive comparison of the entry's name (long, or 8.3 as "NAME.EXT")
+static int name_is(const uint8_t *e, const char *name, int len)
+{
+    char sn[13];
+    int k = 0;
+    for (int i = 0; i < 8 && e[i] != ' '; i++) sn[k++] = (char)e[i];
+    if (e[8] != ' ') { sn[k++] = '.'; for (int i = 8; i < 11 && e[i] != ' '; i++) sn[k++] = (char)e[i]; }
+    sn[k] = 0;
+    const char *cand[2] = { lfn, sn };
+    for (int j = 0; j < 2; j++) {
+        const char *c = cand[j];
+        int i = 0;
+        for (; i < len && c[i]; i++) {
+            char a = c[i], b = name[i];
+            if (a >= 'a' && a <= 'z') a -= 32;
+            if (b >= 'a' && b <= 'z') b -= 32;
+            if (a != b) break;
+        }
+        if (i == len && !c[i]) return 1;
+    }
+    return 0;
+}
+
+struct cd_ctx { const char *name; int len; uint32_t clus; };
+static int cd_cb(const uint8_t *e, void *ctx)
+{
+    struct cd_ctx *cc = ctx;
+    if (!(e[11] & 0x10) || !name_is(e, cc->name, cc->len)) return 0;
+    cc->clus = (rd16(e + 20) << 16) | rd16(e + 26);
+    return 1;
+}
+
+// enters a directory: "doom", "a/b", "/" or "" = root, ".." = parent;
+// a path starting with '/' starts at the root. On error the current
+// directory does not change.
+int fat_chdir(const char *path)
+{
+    uint32_t old = cwd_clus;
+    if (*path == '/' || *path == '\\' || !*path) cwd_clus = 0;
+    while (*path) {
+        while (*path == '/' || *path == '\\') path++;
+        int len = 0;
+        while (path[len] && path[len] != '/' && path[len] != '\\') len++;
+        if (!len) break;
+        struct cd_ctx cc = { path, len, 0 };
+        if (dir_walk(cd_cb, &cc) != 1) { cwd_clus = old; return -1; }
+        cwd_clus = (cc.clus == root_clus) ? 0 : cc.clus;   // ".." to the root stores 0
+        path += len;
+    }
+    return 0;
+}
+#endif

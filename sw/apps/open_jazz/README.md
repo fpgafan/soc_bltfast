@@ -26,7 +26,8 @@ licenses. No game data is included.
   of memory.
 - **Input**: SNES/NES pad, PS/2 keyboard, buttons S1 (Escape) and S2 (Enter).
 - **Files** (`sys_bltfast.c`): newlib system calls on the microSD (FAT16/FAT32,
-  root directory, 8.3 names), heap between the program and the stack.
+  8.3 names, in the `jazz_jackrabbit` folder or the root), heap between the
+  program and the stack.
 - **UART output**: OpenJazz's log, every 5 s `FPS: x  heap: ...` (frames per
   second and heap use), and a watchdog that prints the CPU address if no frame
   is shown for 3 s (loading a level takes 3–4 s, so a couple of messages there
@@ -47,11 +48,12 @@ licenses. No game data is included.
 
 1. FAT32 (or FAT16).
 2. Copy the files of the original *Jazz Jackrabbit* (shareware or registered)
-   to the **root** of the card, not to a folder: `STARTUP.0SC`, `MENUSNG.PSM`,
+   to a `jazz_jackrabbit` folder of the card (or to the root, if there is no
+   such folder): `STARTUP.0SC`, `MENUSNG.PSM`,
    `SOUNDS.000`, `PANEL.000`, `BLOCKS.*`, `LEVEL*.*`, `PLANET.*`,
    `SPRITES.*`, the fonts (`*.0FN`) and the music (`*.PSM`).
-3. Optional `JAZZ.TXT`: `draw=blitter` (default) or `draw=cpu` to draw with
-   the CPU instead of the blitter.
+3. Optional `JAZZ.TXT` in the same folder: `draw=blitter` (default) or
+   `draw=cpu` to draw with the CPU instead of the blitter.
 
 ## Building and running
 
