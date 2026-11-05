@@ -15,6 +15,8 @@ build.py - Builds the software for the bltfast SoC.
   python build.py sonic1              Sonic 1 recompiled from s1disasm (apps/sonic1) -> build/sonic1.bin
   python build.py sonic2              Sonic 2 recompiled from s2disasm (apps/sonic2) -> build/sonic2.bin
   python build.py sonic3              Sonic 3 recompiled from skdisasm (apps/sonic3) -> build/sonic3.bin
+  python build.py sonick              Sonic & Knuckles recompiled from skdisasm (apps/sonick) -> build/sonick.bin
+  python build.py smw                 Super Mario World (snesrev/smw in apps/smw) -> build/smw.bin
   python build.py <app> --run         builds, loads over UART (tools/load.py) and opens the terminal
   python build.py --src <file> --run
                                       if the file is in apps/<app>/, builds that app;
@@ -303,15 +305,22 @@ def build_sonic1():
 
 def build_sonic2():
     """apps/sonic2: Sonic 2 recompiled from s2disasm (recomp/) + runtime. Objects in build/sonic2/."""
-    return build_sonic("sonic2", "s2disasm", "s2built.bin", "s2.lst", "s2code.c", [], "s2syms.h", "S2_CFLAGS")
+    return build_sonic("sonic2", "s2disasm", "s2built.bin", "s2.lst", "s2code.c", ["z80code.c"], "s2syms.h", "S2_CFLAGS")
 
 
 def build_sonic3():
     """apps/sonic3: Sonic 3 recompiled from skdisasm (recomp/) + runtime. Objects in build/sonic3/."""
     # -Os for the recompiled code: 1.8 MB instead of 3.1 MB with -O2, which
     # with the 2 MB ROM would not fit in the 6 MB of the program
-    return build_sonic("sonic3", "skdisasm", "s3built.bin", "s3.lst", "s3code.c", [], "s3syms.h", "S3_CFLAGS",
+    return build_sonic("sonic3", "skdisasm", "s3built.bin", "s3.lst", "s3code.c", ["z80code.c"], "s3syms.h", "S3_CFLAGS",
                        gen_opt="-Os")
+
+
+def build_sonick():
+    """apps/sonick: Sonic & Knuckles (alone) recompiled from the skdisasm of apps/sonic3 (buildSK).
+    Same runtime as Sonic 3. Objects in build/sonick/."""
+    return build_sonic("sonick", os.path.join("..", "sonic3", "skdisasm"), "skbuilt.bin", "sonic3k.lst", "s3code.c",
+                       ["z80code.c"], "s3syms.h", "SK_CFLAGS", gen_opt="-Os")
 
 
 def build_sonic(name, disasm, romname, lstname, codename, extra_gen, symsname, cflags_env, gen_opt="-O2"):
@@ -375,6 +384,71 @@ def build_sonic(name, disasm, romname, lstname, codename, extra_gen, symsname, c
     return binf
 
 
+def build_smw():
+    """apps/smw: Super Mario World (snesrev/smw cloned in apps/smw/smw, C reimplementation)
+    + bltfast layer (apps/smw/port), with newlib. Needs apps/smw/smw/smw_assets.dat
+    (python assets/restool.py with the USA ROM). Objects in build/smw/."""
+    from concurrent.futures import ThreadPoolExecutor
+    d = os.path.join(HERE, "apps", "smw")
+    up, port = os.path.join(d, "smw"), os.path.join(d, "port")
+    ob = os.path.join(B, "smw")
+    os.makedirs(ob, exist_ok=True)
+    dat = os.path.join(up, "smw_assets.dat")
+    if not os.path.exists(dat):
+        sys.exit("missing apps/smw/smw/smw_assets.dat: run 'python assets/restool.py' there with smw.sfc (USA)")
+    with open(os.path.join(ob, "assets.S"), "w") as f:
+        f.write('.section .rodata.assets,"a"\n.balign 16\n.global smw_assets_dat, smw_assets_end\n'
+                'smw_assets_dat:\n.incbin "%s"\nsmw_assets_end:\n' % dat.replace("\\", "/"))
+    arch = ["-march=rv32im_zicsr_zifencei", "-mabi=ilp32", "-g", "-ffunction-sections", "-fdata-sections"]
+    inc = ["-I" + os.path.join(HERE, "lib"), "-I" + port, "-I" + os.path.join(port, "sdlstub"),
+           "-I" + os.path.join(up, "src"), "-I" + up]
+    extra = os.environ.get("SMW_CFLAGS", "").split()
+    libf = arch + inc + ["-O2", "-Wall", "-Wno-unused-parameter", "-ffreestanding", "-fno-builtin",
+                         "-Dprintf=lib_printf"]
+    gamef = arch + inc + ["-O2", "-w", "-fno-strict-aliasing"] + extra
+    jobs = [(os.path.join(HERE, "lib", f), libf) for f in
+            ("crt0.S", "trap.c", "lib.c", "sd.c", "fat.c", "gfx.c", "audio.c", "font8x8.c")]
+    jobs += [(f, arch + inc + ["-O2", "-Wall", "-Wno-unused-parameter", "-Wno-unknown-pragmas", "-fno-strict-aliasing"] + extra)
+             for f in sorted(glob.glob(os.path.join(port, "*.c")) + glob.glob(os.path.join(port, "*.S")))]
+    skip = {"main.c", "opengl.c", "glsl_shader.c", "config.c"}
+    jobs += [(f, gamef) for f in sorted(glob.glob(os.path.join(up, "src", "*.c")) +
+                                        glob.glob(os.path.join(up, "src", "snes", "*.c")))
+             if os.path.basename(f) not in skip]
+    jobs += [(os.path.join(ob, "assets.S"), arch)]
+    hdrs = (glob.glob(os.path.join(HERE, "lib", "*.h")) + glob.glob(os.path.join(port, "*.h")) +
+            glob.glob(os.path.join(up, "src", "*.h")) + glob.glob(os.path.join(up, "src", "snes", "*.h")))
+    fl_file = os.path.join(ob, "cflags.txt")
+    if not os.path.exists(fl_file) or open(fl_file).read() != " ".join(gamef):
+        with open(fl_file, "w") as f:
+            f.write(" ".join(gamef))
+    hdrs.append(fl_file)
+    hmax = max(os.path.getmtime(h) for h in hdrs)
+
+    def cc(job):
+        src, flags = job
+        obj = os.path.join(ob, os.path.splitext(os.path.basename(src))[0] + ".o")
+        if os.path.exists(obj) and os.path.getmtime(obj) > max(os.path.getmtime(src), hmax):
+            return obj, None
+        r = subprocess.run(["riscv-none-elf-gcc"] + flags + ["-c", src, "-o", obj], capture_output=True, text=True)
+        return obj, (os.path.basename(src) + ":\n" + r.stdout + r.stderr) if (r.returncode or r.stderr) else None
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
+        res = list(ex.map(cc, jobs))
+    for _, msg in res:
+        if msg: print(msg)
+    objs = [o for o, _ in res]
+    if not all(os.path.exists(o) for o in objs):
+        sys.exit("ERROR: compilation failed")
+    elf = os.path.join(B, "smw.elf")
+    run(["riscv-none-elf-gcc"] + arch + ["-nostartfiles", "-nostdlib"] + objs +
+        ["-T" + os.path.join(HERE, "lib", "app.ld"), "-Wl,--gc-sections", "-Wl,-Map," + os.path.join(B, "smw.map"),
+         "-Wl,--no-warn-rwx-segments", "-Wl,--start-group", "-lc", "-lm", "-lgcc", "-Wl,--end-group", "-o", elf])
+    binf = os.path.join(B, "smw.bin")
+    subprocess.check_call(["riscv-none-elf-objcopy", "-O", "binary", elf, binf])
+    subprocess.check_call(["riscv-none-elf-size", elf])
+    print(f"smw.bin: {os.path.getsize(binf)} bytes")
+    return binf
+
+
 def app_sources(name):
     return sorted(glob.glob(os.path.join(HERE, "apps", name, "*.c")) +
                   glob.glob(os.path.join(HERE, "apps", name, "*.S")))
@@ -408,8 +482,12 @@ def main():
         binf = build_sonic1()
     elif a.what == "sonic2" or (a.src and os.path.abspath(a.src).startswith(os.path.join(HERE, "apps", "sonic2"))):
         binf = build_sonic2()
+    elif a.what == "smw" or (a.src and os.path.abspath(a.src).startswith(os.path.join(HERE, "apps", "smw"))):
+        binf = build_smw()
     elif a.what == "sonic3" or (a.src and os.path.abspath(a.src).startswith(os.path.join(HERE, "apps", "sonic3"))):
         binf = build_sonic3()
+    elif a.what == "sonick" or (a.src and os.path.abspath(a.src).startswith(os.path.join(HERE, "apps", "sonick"))):
+        binf = build_sonick()
     elif a.src:
         src = os.path.abspath(a.src)
         if not os.path.isfile(src):

@@ -8,6 +8,7 @@
 //      [--cache I,D]     I-cache / D-cache size in KB for --timing (default 8,16, as in the RTL)
 //      [--blt O,R,P]     blitter time for --timing: O cycles per command + per row R cycles
 //                        + width/P (default 20,12,1: close to the board); 32-command queue (CMD waits when full)
+//      [--trapmisal]     misaligned loads/stores raise exceptions 4/6 (mtval = address), as the CPU does
 //      [--dump addr,len,file]  at the end, writes len bytes of memory from addr (SDRAM, hex) to a file
 //      PROFPC=N (environment, with --prof): also the N hottest instruction addresses
 'use strict';
@@ -28,6 +29,7 @@ for (let i = 2; i < args.length; i++) {
   else if (a === '--maxsec') opt.maxsec = +args[++i];
   else if (a === '--prof') opt.prof = args[++i];
   else if (a === '--sdslow') opt.sdslow = +args[++i];
+  else if (a === '--trapmisal') opt.trapmisal = true;
   else if (a === '--oplwav') opt.oplwav = args[++i];
   else if (a === '--cache') opt.cache = args[++i].split(',').map(Number);
   else if (a === '--blt') opt.blt = args[++i].split(',').map(Number);
@@ -415,6 +417,7 @@ function dAccess(a) {
   else if (u >= 8) cycles += 3;
 }
 const prof = opt.prof ? [] : null;
+let profNext = 0;
 function run() {
   const t0 = Date.now();
   let nextFrame = FRAME_CYC;
@@ -464,12 +467,14 @@ function run() {
         }
         case 0x03: {
           const a = (x[r1] + (i >> 20)) | 0;
+          if (opt.trapmisal && (a & ((1 << (f3 & 3)) - 1))) { mtval = a; trap(4, pc); npc = pc; break; }
           let v;
           switch (f3) { case 0: v = ld(a, 1, 1); break; case 1: v = ld(a, 2, 1); break; case 2: v = ld(a, 4, 1); break; case 4: v = ld(a, 1, 0); break; case 5: v = ld(a, 2, 0); break; default: throw new Error('load'); }
           if (rd) x[rd] = v; break;
         }
         case 0x23: {
           const imm = ((i >> 25) << 5) | ((i >> 7) & 31);
+          if (opt.trapmisal && ((x[r1] + imm) & ((1 << f3) - 1))) { mtval = (x[r1] + imm) | 0; trap(6, pc); npc = pc; break; }
           st((x[r1] + imm) | 0, x[r2], 1 << f3); break;
         }
         case 0x13: {
@@ -525,7 +530,8 @@ function run() {
         }
         default: throw new Error('instruction ' + (i >>> 0).toString(16) + ' pc=' + (pc >>> 0).toString(16));
       }
-      if (prof && (cycles & 127) === 0) prof.push(pc >>> 0);
+      // one sample per 128 cycles (with --timing the penalties count: a cycle profile)
+      if (prof) while (cycles >= profNext) { prof.push(pc >>> 0); profNext += 128; }
       pc = npc;
       if (bltIrqAt >= 0 && cycles >= bltIrqAt) { irqPend |= 8; bltIrqAt = -1; }
       if ((mstatus & 8) && (mie & 0x80) && timerPending()) trap(0x80000007 | 0, pc);
@@ -559,7 +565,7 @@ console.error(`music notes: ${keyMus}, effects: ${keySfx}, OPL2 writes: ${oplWri
 if (opt.oplwav) oplRender(opt.oplwav);
 console.error(`\nend: frame ${frame}, ${cycles} instructions, reset=${reset}, misaligned=${misal}`);
 if (TM) console.error(`timing model: I-misses ${tmStats.imiss}, D-misses ${tmStats.dmiss}, uncached ${tmStats.unc}, branch penalties ${tmStats.br}, load-use ${tmStats.lu}, stores ${tmStats.st}`);
-if (misal) console.error('misaligned by pc:', [...misalPCs.entries()].slice(0, 20));
+if (misal) console.error('misaligned by pc:', [...misalPCs.entries()].sort((a, b) => b[1] - a[1]).slice(0, 30));
 if (diskDirty) fs.writeFileSync(imgf + '.out', disk);
 shot('final.png');
 if (opt.dump) {
@@ -578,7 +584,7 @@ if (prof) {
     h.set(f, (h.get(f) || 0) + 1);
   }
   const tot = prof.length;
-  console.error('profile (% of instructions):');
+  console.error(TM ? 'profile (% of cycles):' : 'profile (% of instructions):');
   for (const [f, n] of [...h.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25)) console.error((100 * n / tot).toFixed(1).padStart(6) + '%  ' + f);
   if (process.env.PROFPC) {                       // the hottest addresses of one function
     const hp = new Map();
