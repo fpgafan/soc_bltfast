@@ -1,15 +1,20 @@
 // ============================================================================
-// rv_core.v - 6-stage pipelined RV32IM_Zicsr core, designed for Fmax
+// rv_core.v - 6-stage pipelined RV32IM_Zicsr_Zba_Zbb core, designed for Fmax
 //
 //   F1  : next-PC computation -> icache BSRAM address
 //   F2  : icache output + tag compare; precomputation of the
-//         branch target (PC + imm) and static prediction (BTFN + JAL + RAS)
+//         branch target (PC + imm) and prediction: JAL, returns (RAS),
+//         branches (BTFN corrected by a table of 256 "disagree" counters)
+//         and indirect JALR with imm = 0 (table of 32 last targets)
 //   D   : decode, register file (distributed RAM), W bypass,
 //         precomputed forwarding select, load-use interlock
 //   E   : ALU, branch compare, AGU -> dcache BSRAM address,
 //         multiply / divide (multicycle, stalls only D/E)
 //   M   : dcache output + tag, load alignment, stores
-//         (dcache + store buffer), CSR, exceptions, MRET, FENCE
+//         (dcache + store buffer), CSR, exceptions, MRET, FENCE,
+//         the slow Zba/Zbb operations (shNadd orc.b rev8 rol ror min max:
+//         result at the end of M like a load). clz/ctz/cpop: multicycle in
+//         rv_muldiv
 //   W   : register file write-back
 //
 // Fmax philosophy: no "late" signal (cache hit) reaches the enables of
@@ -20,7 +25,8 @@
 // busy. An icache miss only affects fetch.
 //
 // Penalties: predicted-taken branch 1 cycle, misprediction 3,
-// load-use 1, store followed by load 1, MUL 3, DIV ~34.
+// load-use 1 (also after a slow Zba/Zbb operation), store followed by load 1,
+// MUL 3, DIV ~34, clz/ctz ~4-12, cpop 9.
 // ============================================================================
 `default_nettype none
 module rv_core #(
@@ -96,6 +102,7 @@ module rv_core #(
     reg        vD;
     reg [31:0] irD, pcD, tgtD;
     reg        predD, doneD;
+    reg [1:0]  ctrD;                // counter read for the branch in D
 
     wire       stallD;              // defined below
     wire       fencei_commit;       // FENCE.I retiring in M
@@ -108,6 +115,21 @@ module rv_core #(
     reg [1:0]  ras_sp;
     wire [31:0] ras_top = ras[ras_sp];
 
+    // branch predictor (distributed RAM, asynchronous read with pcF in F2):
+    //   bht: 2-bit counter per branch (index pc[9:2]) of how much the branch
+    //        disagrees with the static prediction (backward taken); starts at 0
+    //   jt:  last target of the indirect JALR (imm = 0, not returns), pc[6:2]
+    reg  [1:0]  bht [0:255] /* synthesis syn_ramstyle = "distributed_ram" */;
+    // jt entry: {target[30], target[22:1], valid} (code is in the ROM or the SDRAM)
+    reg  [23:0] jt  [0:31]  /* synthesis syn_ramstyle = "distributed_ram" */;
+    integer bi;
+    initial begin
+        for (bi = 0; bi < 256; bi = bi + 1) bht[bi] = 2'd0;
+        for (bi = 0; bi < 32; bi = bi + 1) jt[bi] = 24'd0;
+    end
+    wire [1:0]  f_ctr = bht[pcF[9:2]];
+    wire [23:0] f_jt  = jt[pcF[6:2]];
+
     // predecode in F2
     wire [31:0] fi       = ic_rdata;
     wire        f_jal    = fi[6:0] == OP_JAL;
@@ -118,7 +140,8 @@ module rv_core #(
     wire [31:0] f_immj   = {{12{fi[31]}}, fi[19:12], fi[20], fi[30:21], 1'b0};
     wire [31:0] f_immb   = {{20{fi[31]}}, fi[7], fi[30:25], fi[11:8], 1'b0};
     wire [31:0] f_tgt    = pcF + (fi[2] ? f_immj : f_immb);
-    wire        f_pred   = f_jal | (f_br & fi[31]) | f_ret;
+    wire        f_jind   = f_jalr & ~f_ret & (fi[31:20] == 12'd0) & f_jt[0];
+    wire        f_pred   = f_jal | (f_br & (fi[31] ^ f_ctr[1])) | f_ret | f_jind;
 
     // fetch control
     reg         f_en;
@@ -199,6 +222,41 @@ module rv_core #(
         end
     end
 
+    // legality of the instruction, decoded in F2 (off the D -> E path)
+    function rv_legal(input [31:0] ir);
+        reg [6:0] op, f7;
+        reg [2:0] f3;
+        reg [4:0] r2;
+        reg [11:0] i12;
+        reg       un, csr;
+        begin
+            op = ir[6:0]; f3 = ir[14:12]; f7 = ir[31:25]; r2 = ir[24:20]; i12 = ir[31:20];
+            un  = (f7 == 7'b0110000) & (r2 == 5'd0 || r2 == 5'd1 || r2 == 5'd2 || r2 == 5'd4 || r2 == 5'd5);
+            csr = (f3 != 3'b000) & (f3 != 3'b100);
+            case (op)
+            OP_LUI, OP_AUIPC, OP_JAL: rv_legal = 1'b1;
+            OP_JALR:  rv_legal = f3 == 3'b000;
+            OP_BR:    rv_legal = f3 != 3'b010 && f3 != 3'b011;
+            OP_LD:    rv_legal = f3 != 3'b011 && f3 != 3'b110 && f3 != 3'b111;
+            OP_ST:    rv_legal = f3 == 3'b000 || f3 == 3'b001 || f3 == 3'b010;
+            OP_OPI:   rv_legal = (f3 == 3'b001) ? (f7 == 7'b0) | un :
+                                 (f3 == 3'b101) ? (f7 == 7'b0 || f7 == 7'b0100000 || f7 == 7'b0110000 ||
+                                                   i12 == 12'h287 || i12 == 12'h698) : 1'b1;
+            OP_OP:    rv_legal = (f7 == 7'b0000001) || (f7 == 7'b0) ||
+                                 (f7 == 7'b0100000 && (f3 == 3'b000 || f3 == 3'b101 || f3[2])) ||
+                                 (f7 == 7'b0010000 && (f3 == 3'b010 || f3 == 3'b100 || f3 == 3'b110)) ||
+                                 (f7 == 7'b0000101 && f3[2]) ||
+                                 (f7 == 7'b0110000 && (f3 == 3'b001 || f3 == 3'b101)) ||
+                                 (f7 == 7'b0000100 && f3 == 3'b100 && r2 == 5'd0);
+            OP_MISC:  rv_legal = f3 == 3'b000 || f3 == 3'b001;
+            OP_SYS:   rv_legal = csr | (f3 == 3'b000 && (i12 == 12'h000 || i12 == 12'h001 ||
+                                                         i12 == 12'h302 || i12 == 12'h105));
+            default:  rv_legal = 1'b0;
+            endcase
+        end
+    endfunction
+    reg legalD;
+
     // F2 -> D
     always @(posedge clk) begin
         if (rst) begin
@@ -209,8 +267,10 @@ module rv_core #(
             vD    <= f2_ok & ~d_redir;
             irD   <= fi;
             pcD   <= pcF;
-            tgtD  <= f_ret ? ras_top : f_tgt;
+            tgtD  <= f_ret ? ras_top : f_jind ? {1'b0, f_jt[23], 7'd0, f_jt[22:1], 1'b0} : f_tgt;
             predD <= f_pred;
+            ctrD  <= f_ctr;
+            legalD <= rv_legal(fi);
             doneD <= 1'b0;
         end else if (d_redir)
             doneD <= 1'b1;
@@ -246,26 +306,31 @@ module rv_core #(
     wire dEBRK  = dPRIV & (irD[31:20] == 12'h001);
     wire dMRET  = dPRIV & (irD[31:20] == 12'h302);
     wire dWFI   = dPRIV & (irD[31:20] == 12'h105);
+    // Zba / Zbb
+    wire [11:0] i12D = irD[31:20];
+    wire zShadd = dOP & (f7D == 7'b0010000) & (f3D == 3'b010 || f3D == 3'b100 || f3D == 3'b110);
+    wire zInv   = dOP & (f7D == 7'b0100000) & (f3D == 3'b100 || f3D == 3'b110 || f3D == 3'b111);
+    wire zMinMx = dOP & (f7D == 7'b0000101) & f3D[2];
+    wire zRot   = (dOP & (f7D == 7'b0110000) & (f3D == 3'b001 || f3D == 3'b101)) |
+                  (dOPI & (f7D == 7'b0110000) & (f3D == 3'b101));
+    wire zUn    = dOPI & (f3D == 3'b001) & (f7D == 7'b0110000);
+    wire zClz   = zUn & (rs2D == 5'd0);
+    wire zCtz   = zUn & (rs2D == 5'd1);
+    wire zCpop  = zUn & (rs2D == 5'd2);
+    wire zSextB = zUn & (rs2D == 5'd4);
+    wire zSextH = zUn & (rs2D == 5'd5);
+    wire zOrcB  = dOPI & (f3D == 3'b101) & (i12D == 12'h287);
+    wire zRev8  = dOPI & (f3D == 3'b101) & (i12D == 12'h698);
+    wire zZextH = dOP & (f7D == 7'b0000100) & (f3D == 3'b100) & (rs2D == 5'd0);
+    wire zLate  = zMinMx | zRot | zOrcB | zRev8 | zShadd;               // computed in M
+    wire zCnt   = zClz | zCtz | zCpop;                                  // multicycle (rv_muldiv)
+    wire zExt   = zSextB | zSextH | zZextH;                            // one term in E
+    wire dALU   = (dOP | dOPI) & ~dMD & ~zLate & ~zExt & ~zCnt;       // base ALU (+ andn/orn/xnor)
+
     wire dFENCE = dMISC & (f3D == 3'b000);
     wire dFENCI = dMISC & (f3D == 3'b001);
 
-    reg dLegal;
-    always @(*) begin
-        case (opD)
-        OP_LUI, OP_AUIPC, OP_JAL: dLegal = 1'b1;
-        OP_JALR:  dLegal = f3D == 3'b000;
-        OP_BR:    dLegal = f3D != 3'b010 && f3D != 3'b011;
-        OP_LD:    dLegal = f3D != 3'b011 && f3D != 3'b110 && f3D != 3'b111;
-        OP_ST:    dLegal = f3D == 3'b000 || f3D == 3'b001 || f3D == 3'b010;
-        OP_OPI:   dLegal = (f3D == 3'b001) ? (f7D == 7'b0) :
-                           (f3D == 3'b101) ? (f7D == 7'b0 || f7D == 7'b0100000) : 1'b1;
-        OP_OP:    dLegal = (f7D == 7'b0000001) || (f7D == 7'b0) ||
-                           (f7D == 7'b0100000 && (f3D == 3'b000 || f3D == 3'b101));
-        OP_MISC:  dLegal = f3D == 3'b000 || f3D == 3'b001;
-        OP_SYS:   dLegal = dCSR | dECALL | dEBRK | dMRET | dWFI;
-        default:  dLegal = 1'b0;
-        endcase
-    end
+    wire dLegal = legalD;
 
     wire [31:0] immI = {{20{irD[31]}}, irD[31:20]};
     wire [31:0] immS = {{20{irD[31]}}, irD[31:25], irD[11:7]};
@@ -275,9 +340,10 @@ module rv_core #(
     wire rs2_used = dBR | dST | dOP;
     wire use_imm  = dOPI | dLUI | dAUI;
     wire d_we     = (dLUI | dAUI | dJAL | dJALR | dLD | dOPI | dOP | dCSR) & (rdD != 5'd0);
-    wire d_late   = dLD | dCSR;                      // result available at the end of M
+    wire d_late   = dLD | dCSR | zLate;              // result available at the end of M
+    // (min/max compare in the ALU: lt/ltu go to M)
     wire d_sub    = (dOP & f7D[5] & (f3D == 3'b000)) |
-                    ((dOP | dOPI) & (f3D == 3'b010 || f3D == 3'b011)) | dBR;
+                    ((dOP | dOPI) & (f3D == 3'b010 || f3D == 3'b011) & ~zShadd) | dBR | zMinMx;
 
     // register file: two copies in distributed RAM (asynchronous read)
     reg  [31:0] rf1 [0:31] /* synthesis syn_ramstyle = "distributed_ram" */;
@@ -309,6 +375,15 @@ module rv_core #(
     reg [31:0] pcE, pc4E, tgtE, opaE, opbE, immE;
     reg        predE, rpushE, rpopE;
     reg        fAM, fAW, fBM, fBW;
+    // Zba/Zbb in E: shNadd (operand a already shifted, one-hot selects of its
+    // source: M, W or the register read in D), extensions, inverted b
+    reg        s_ext, e_b, e_h, binvE, xbE, jtE;
+    reg        sh1E, sh2E, sh3E;          // shNadd: n
+    reg [1:0]  cntE;                      // clz 01 / ctz 10 / cpop 11 (rv_muldiv)
+    // slow operation (one-hot, for M)
+    reg        x_orcE, x_revE, x_rotE, x_rolE, x_mmE;
+    reg [1:0]  ctrE;
+    reg        hintE;                    // static prediction of the branch (backward)
 
     reg        vM, weM, lateM, ldM, stM, csrM, cacheM;
     reg        excM, irqM, mretM, fenceM, fenciM;
@@ -317,6 +392,9 @@ module rv_core #(
     reg [4:0]  rdM;
     reg [31:0] pcM, resM, addrM, sdM;
     reg [11:0] csraM;
+    reg        xbM, x_orcM, x_revM, x_rotM, x_mmM, x_selaM, sh1M, sh2M, sh3M;
+    reg [4:0]  x_shM;
+    reg [31:0] aM;
 
     // ========================================================================
     // D: interlocks and forwarding
@@ -378,21 +456,38 @@ module rv_core #(
                 opaE   <= (dAUI) ? pcD : (dLUI) ? 32'd0 : dCSRI ? {27'd0, rs1D} : r1;
                 opbE   <= dCSR ? 32'd0 : use_imm ? (dLUI | dAUI ? immU : immI) : r2;   // CSR: a + 0
                 fAM    <= nfAM;  fAW <= nfAW;  fBM <= nfBM;  fBW <= nfBW;
-                s_x    <= dJAL | dJALR | dMD;
-                s_add  <= ~(dJAL | dJALR | dMD) & (~(dOP | dOPI) | f3D == 3'b000);
-                s_sll  <= (dOP | dOPI) & ~dMD & (f3D == 3'b001);
-                s_slt  <= (dOP | dOPI) & ~dMD & (f3D == 3'b010);
-                s_sltu <= (dOP | dOPI) & ~dMD & (f3D == 3'b011);
-                s_xor  <= (dOP | dOPI) & ~dMD & (f3D == 3'b100);
-                s_sr   <= (dOP | dOPI) & ~dMD & (f3D == 3'b101);
-                s_or   <= (dOP | dOPI) & ~dMD & (f3D == 3'b110);
-                s_and  <= (dOP | dOPI) & ~dMD & (f3D == 3'b111);
+                s_x    <= dJAL | dJALR | dMD | zCnt;
+                s_add  <= ~(dJAL | dJALR | dMD) & (~(dOP | dOPI) | (dALU & f3D == 3'b000));
+                s_sll  <= dALU & (f3D == 3'b001);
+                s_slt  <= dALU & (f3D == 3'b010);
+                s_sltu <= dALU & (f3D == 3'b011);
+                s_xor  <= dALU & (f3D == 3'b100);
+                s_sr   <= dALU & (f3D == 3'b101);
+                s_or   <= dALU & (f3D == 3'b110);
+                s_and  <= dALU & (f3D == 3'b111);
+                binvE  <= zInv;
+                s_ext  <= zExt;
+                e_b    <= zSextB;
+                e_h    <= zSextH;
+                sh1E   <= zShadd & (f3D[2:1] == 2'b01);
+                sh2E   <= zShadd & (f3D[2:1] == 2'b10);
+                sh3E   <= zShadd & (f3D[2:1] == 2'b11);
+                cntE   <= {zCtz | zCpop, zClz | zCpop};
+                x_orcE <= zOrcB;
+                x_revE <= zRev8;
+                x_rotE <= zRot;
+                x_rolE <= zRot & (f3D == 3'b001);
+                x_mmE  <= zMinMx;
+                ctrE   <= ctrD;
+                hintE  <= irD[31];
+                jtE    <= dJALR & (i12D == 12'd0) & ~((rs1D == 5'd1 || rs1D == 5'd5) & (rdD == 5'd0));
                 subE   <= d_sub;
                 sraE   <= f7D[5];
                 if (inject | ~dLegal) begin
                     weE <= 1'b0; lateE <= 1'b0; ldE <= 1'b0; stE <= 1'b0; brE <= 1'b0;
                     jalrE <= 1'b0; linkE <= 1'b0; mdE <= 1'b0; csrE <= 1'b0;
                     mretE <= 1'b0; fenceE <= 1'b0; fenciE <= 1'b0;
+                    xbE   <= 1'b0;
                     irqE  <= inject;
                     excE  <= ~inject;
                     causeE <= 4'd2;                     // illegal instruction
@@ -404,11 +499,12 @@ module rv_core #(
                     brE    <= dBR;
                     jalrE  <= dJALR;
                     linkE  <= dJAL | dJALR;
-                    mdE    <= dMD;
+                    mdE    <= dMD | zCnt;
                     csrE   <= dCSR;
                     mretE  <= dMRET;
                     fenceE <= dFENCE;
                     fenciE <= dFENCI;
+                    xbE    <= zLate;
                     irqE   <= 1'b0;
                     excE   <= dECALL | dEBRK;
                     causeE <= dECALL ? 4'd11 : 4'd3;
@@ -447,6 +543,11 @@ module rv_core #(
     wire        c_lt  = (ac[31] ^ bc[31]) ? ac[31] : cmp33[31];
     wire        c_eq  = (ac == bc);
 
+    // Zbb andn / orn / xnor
+    wire [31:0] bn = b ^ {32{binvE}};
+    // Zbb sext.b / sext.h / zext.h
+    wire [31:0] extv = {{16{e_b ? a[7] : (e_h & a[15])}}, e_b ? {8{a[7]}} : a[15:8], a[7:0]};
+
     // result: AND-OR with registered one-hot selects
     wire [31:0] md_res;
     wire [31:0] xres = linkE ? pc4E : md_res;
@@ -454,10 +555,11 @@ module rv_core #(
                        ({32{s_sll}}  & sll) |
                        ({32{s_slt}}  & {31'd0, lt}) |
                        ({32{s_sltu}} & {31'd0, ltu}) |
-                       ({32{s_xor}}  & (a ^ b)) |
+                       ({32{s_xor}}  & (a ^ bn)) |
                        ({32{s_sr}}   & srx) |
-                       ({32{s_or}}   & (a | b)) |
-                       ({32{s_and}}  & (a & b)) |
+                       ({32{s_or}}   & (a | bn)) |
+                       ({32{s_and}}  & (a & bn)) |
+                       ({32{s_ext}}  & extv) |
                        ({32{s_x}}    & xres);
 
     wire [31:0] agu = aa + immE;
@@ -466,7 +568,7 @@ module rv_core #(
     // muldiv
     wire md_start = vE & mdE & ~kill_DE;
     rv_muldiv u_md (
-        .clk(clk), .rst(rst), .start(md_start), .kill(kill_DE), .op(f3E),
+        .clk(clk), .rst(rst), .start(md_start), .kill(kill_DE), .op(f3E), .cnt(cntE),
         .a(a), .b(b), .done(md_done), .res(md_res)
     );
 
@@ -490,6 +592,29 @@ module rv_core #(
     wire        mispredict = liveE & (mis_br | mis_jr);
     // on a branch misprediction the target is the opposite of the predicted one
     wire [31:0] mis_pc = jalrE ? jtgt : (predE ? pc4E : tgtE);
+
+    // predictor update: outcome registered in E, tables written the next cycle
+    // (a branch replayed later counts twice: harmless)
+    reg        bu_we, bu_dis, ju_we;
+    reg [1:0]  bu_ctr;
+    reg [7:0]  bu_idx;
+    reg [4:0]  ju_idx;
+    reg [22:0] ju_tgt;
+    always @(posedge clk) begin
+        bu_we  <= liveE & brE;
+        bu_dis <= taken ^ hintE;
+        bu_ctr <= ctrE;
+        bu_idx <= pcE[9:2];
+        ju_we  <= liveE & jtE;
+        ju_idx <= pcE[6:2];
+        ju_tgt <= {jtgt[30], jtgt[22:1]};
+    end
+    wire [1:0] bht_nv = bu_dis ? ((bu_ctr == 2'd3) ? 2'd3 : bu_ctr + 2'd1) :
+                                 ((bu_ctr == 2'd0) ? 2'd0 : bu_ctr - 2'd1);
+    always @(posedge clk) begin
+        if (bu_we & ~rst) bht[bu_idx] <= bht_nv;
+        if (ju_we & ~rst) jt[ju_idx] <= {ju_tgt, 1'b1};
+    end
 
     // misalignment
     wire misal = (f3E[1:0] == 2'b10 && agu[1:0] != 2'b00) ||
@@ -520,6 +645,14 @@ module rv_core #(
             mretM  <= mretE;
             fenceM <= fenceE;
             fenciM <= fenciE;
+            xbM    <= xbE;
+            x_orcM <= x_orcE; x_revM <= x_revE; x_rotM <= x_rotE; x_mmM  <= x_mmE;
+            sh1M   <= sh1E;   sh2M   <= sh2E;   sh3M   <= sh3E;
+            // min/max: take a? (lt or ltu of the ALU, inverted for max)
+            x_selaM <= (f3E[0] ? ltu : lt) ^ f3E[1];
+            // rotations: amount to the right (rol = ror by -n)
+            x_shM  <= x_rolE ? 5'd0 - b[4:0] : b[4:0];
+            aM     <= a;
             if ((ldE | stE) & misal & ~excE) begin
                 excM   <= 1'b1;
                 causeM <= ldE ? 4'd4 : 4'd6;
@@ -601,6 +734,16 @@ module rv_core #(
     end
     // CSRRS/CSRRC with rs1 = x0 / zimm = 0 do not write
     wire csr_wr_en = (f3M[1:0] == 2'b01) | (csr_src != 32'd0);
+
+    // slow Zbb operations (operands registered: a whole cycle; one-hot selects)
+    wire [63:0] rorw  = {aM, aM} >> x_shM;
+    wire [31:0] shsum = (({32{sh1M}} & {aM[30:0], 1'b0}) | ({32{sh2M}} & {aM[29:0], 2'b0}) |
+                         ({32{sh3M}} & {aM[28:0], 3'b0})) + sdM;     // 0 + sdM if not shNadd
+    wire [31:0] xres_m = ({32{x_orcM}} & {{8{|aM[31:24]}}, {8{|aM[23:16]}}, {8{|aM[15:8]}}, {8{|aM[7:0]}}}) |
+                         ({32{x_revM}} & {aM[7:0], aM[15:8], aM[23:16], aM[31:24]}) |
+                         ({32{x_rotM}} & rorw[31:0]) |
+                         ({32{x_mmM}}  & (x_selaM ? aM : sdM)) |
+                         ({32{sh1M | sh2M | sh3M}} & shsum);
 
     wire replay  = liveM & ~excM & ((ldM & ~ld_ok) | (stM & sb_full) | (irqM & ~irq_now));
     wire trap    = liveM & (excM | (irqM & irq_now));
@@ -694,7 +837,9 @@ module rv_core #(
         end
     end
 
-    // M -> W
+    // M -> W (the late results other than loads are merged first, off the load path)
+    // (xres_m is 0 unless a slow operation is in M)
+    wire [31:0] resMx = csrM ? csr_rq : (xres_m | ({32{~xbM}} & resM));
     always @(posedge clk) begin
         if (rst) begin
             vW <= 1'b0; weW <= 1'b0;
@@ -702,7 +847,7 @@ module rv_core #(
             vW   <= liveM & ~replay & ~trap;
             weW  <= weM & liveM & ~replay & ~trap;
             rdW  <= rdM;
-            resW <= ldM ? ldata : csrM ? csr_rq : resM;
+            resW <= ldM ? ldata : resMx;
         end
     end
 

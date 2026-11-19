@@ -15,6 +15,8 @@ import run_isa
 HERE = os.path.dirname(os.path.abspath(__file__))
 BUILD = os.path.join(HERE, "build")
 
+ZB = os.environ.get("ZB", "1") == "1"       # Zba/Zbb instructions (ZB=0: plain RV32IM)
+IND = True                                 # jump tables and indirect calls
 RSV = {0, 1, 8, 9, 18, 19, 31}            # x0, ra, s0, s1, s2, s3, t6 (loops)
 REGS = [r for r in range(32) if r not in RSV]
 
@@ -46,10 +48,35 @@ def gen(rng, nblk):
         if k < 0.7:
             op = rng.choice(["slli", "srli", "srai"])
             return [f"{op} {R(rng)}, {S(rng)}, {rng.randrange(32)}"]
-        if k < 0.78:
+        if k < 0.74:
             return [f"lui {R(rng)}, {rng.randrange(1 << 20)}"]
+        if k < 0.84 and ZB:
+            return zb()
         op = rng.choice(["mul", "mulh", "mulhsu", "mulhu", "div", "divu", "rem", "remu"])
         return [f"{op} {R(rng)}, {S(rng)}, {S(rng)}"]
+
+    def zb():
+        k = rng.random()
+        if k < 0.5:
+            op = rng.choice(["sh1add", "sh2add", "sh3add", "andn", "orn", "xnor",
+                             "min", "minu", "max", "maxu", "rol", "ror"])
+            seq = [f"{op} {R(rng)}, {S(rng)}, {S(rng)}"]
+        elif k < 0.6:
+            seq = [f"rori {R(rng)}, {S(rng)}, {rng.randrange(32)}"]
+        else:
+            op = rng.choice(["clz", "ctz", "cpop", "sext.b", "sext.h", "zext.h", "orc.b", "rev8"])
+            seq = [f"{op} {R(rng)}, {S(rng)}"]
+        if rng.random() < 0.5:
+            # dependent chain: the result is used right away (forwarding / interlock)
+            d = seq[0].split()[1].rstrip(",")
+            op = rng.choice(["add", "sh2add", "xor", "clz", "min", "sext.h", "rol"])
+            if op in ("clz", "sext.h"):
+                seq.append(f"{op} {R(rng)}, {d}")
+            elif rng.random() < 0.5:
+                seq.append(f"{op} {R(rng)}, {d}, {S(rng)}")
+            else:
+                seq.append(f"{op} {R(rng)}, {S(rng)}, {d}")
+        return seq
 
     def mem():
         sz = rng.choice([1, 2, 4])
@@ -98,6 +125,42 @@ def gen(rng, nblk):
                 out += simple()
             out.append("addi x31, x31, -1")
             out.append(f"bnez x31, {l}")
+        elif k < 0.94 and IND:
+            # switch with a jump table (indirect jr through sh2add + lw), in a loop
+            l, j, t = L(), L(), L()
+            n = rng.randrange(2, 5)
+            cases = [L() for _ in range(n)]
+            tr, ur = R(rng), R(rng)
+            while ur == tr:
+                ur = R(rng)
+            out.append(f"li x31, {rng.randrange(2, 12)}")
+            out.append(f"{l}:")
+            pat = rng.choice(["andi {tr}, x31, {m}", "li {tr}, 0"])
+            out.append(pat.format(tr=tr, m=(1 << (n - 1).bit_length()) - 1))
+            out.append(f"li {ur}, {n - 1}")
+            out.append(f"minu {tr}, {tr}, {ur}" if ZB else f"bleu {tr}, {ur}, 1f\nmv {tr}, {ur}\n1:")
+            out.append(f"la {ur}, {t}")
+            out.append(f"sh2add {tr}, {tr}, {ur}" if ZB else f"slli {tr}, {tr}, 2\nadd {tr}, {tr}, {ur}")
+            out.append(f"lw {tr}, 0({tr})")
+            out.append(f"jr {tr}")
+            for c in cases:
+                out.append(f"{c}:")
+                for _ in range(rng.randrange(0, 3)):
+                    out += simple()
+                out.append(f"j {j}")
+            out.append(".balign 4")
+            out.append(f"{t}:")
+            for c in cases:
+                out.append(f".word {c}")
+            out.append(f"{j}:")
+            out.append("addi x31, x31, -1")
+            out.append(f"bnez x31, {l}")
+        elif k < 0.97 and IND and funcs:
+            # indirect call
+            f = rng.choice(funcs)[0]
+            tr = R(rng)
+            out.append(f"la {tr}, {f}")
+            out.append(f"jalr ra, 0({tr})")
         else:
             f = f"func{len(funcs)}"
             body = []
@@ -126,7 +189,8 @@ def main():
     open(src, "w").write(gen(rng, nblk))
     elf = os.path.join(BUILD, "rand.elf")
     env = os.path.join(HERE, "tests", "env")
-    subprocess.check_call(["riscv-none-elf-gcc", "-march=rv32im_zicsr", "-mabi=ilp32", "-nostdlib",
+    march = "rv32im_zba_zbb_zicsr" if ZB else "rv32im_zicsr"
+    subprocess.check_call(["riscv-none-elf-gcc", "-march=" + march, "-mabi=ilp32", "-nostdlib",
                            "-nostartfiles", "-T" + os.path.join(env, "link.ld"), src, "-o", elf,
                            "-Wl,--no-warn-rwx-segments"])
     binf = os.path.join(BUILD, "rand.bin")

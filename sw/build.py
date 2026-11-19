@@ -22,6 +22,9 @@ build.py - Builds the software for the bltfast SoC.
                                       if the file is in apps/<app>/, builds that app;
                                       otherwise builds that loose .c with the library
   --port COMx                         serial port (auto-detected by default)
+  --zb                                apps with the Zba/Zbb extensions (SoC version 2, "BLT2";
+                                      on an older bitstream they stop with an illegal instruction).
+                                      The boot ROM is always plain RV32IM.
 """
 import os, sys, subprocess, glob, struct, argparse
 
@@ -33,10 +36,22 @@ FS = os.path.join(ROOT, "impl", "pnr", "bltfast.fs")
 os.environ["PATH"] = GCC + os.pathsep + os.environ["PATH"]
 B = os.path.join(HERE, "build")
 os.makedirs(B, exist_ok=True)
+MARCH = "rv32im_zicsr_zifencei"          # --zb: rv32im_zba_zbb_zicsr_zifencei
 CFLAGS = ["-march=rv32im_zicsr_zifencei", "-mabi=ilp32", "-O2", "-g", "-Wall", "-Wextra",
           "-Wno-unused-parameter", "-ffreestanding", "-fno-builtin", "-nostdlib", "-nostartfiles",
           "-ffunction-sections", "-fdata-sections", "-I" + os.path.join(HERE, "lib")]
 LIB = [os.path.join(HERE, "lib", f) for f in ("lib.c", "sd.c", "fat.c")]
+
+
+def march_guard(ob):
+    """objects of ob compiled with another -march: they are deleted (everything is rebuilt)"""
+    stamp = os.path.join(ob, "march.txt")
+    old = open(stamp).read().strip() if os.path.exists(stamp) else "rv32im_zicsr_zifencei"
+    if old != MARCH:
+        for f in glob.glob(os.path.join(ob, "**", "*.o"), recursive=True):
+            os.remove(f)
+    with open(stamp, "w") as f:
+        f.write(MARCH + "\n")
 
 
 def run(cmd, cwd=None):
@@ -47,6 +62,8 @@ def run(cmd, cwd=None):
 def link(name, srcs, ld, opt):
     elf = os.path.join(B, name + ".elf")
     cf = [x for c in CFLAGS for x in (opt.split() if c == "-O2" else [c])]
+    cf = ["-march=" + (MARCH if "-DBOOTROM" not in opt else "rv32im_zicsr_zifencei") if c.startswith("-march=") else c
+          for c in cf]
     run(["riscv-none-elf-gcc"] + cf + srcs + ["-T" + ld, "-Wl,--gc-sections",
          "-Wl,-Map," + os.path.join(B, name + ".map"), "-Wl,--no-warn-rwx-segments", "-lgcc", "-o", elf])
     binf = os.path.join(B, name + ".bin")
@@ -98,7 +115,8 @@ def build_openjazz():
     d = os.path.join(HERE, "apps", "open_jazz")
     ob = os.path.join(B, "open_jazz")
     os.makedirs(ob, exist_ok=True)
-    arch = ["-march=rv32im_zicsr_zifencei", "-mabi=ilp32", "-g", "-ffunction-sections", "-fdata-sections"]
+    march_guard(ob)
+    arch = ["-march=" + MARCH, "-mabi=ilp32", "-g", "-ffunction-sections", "-fdata-sections"]
     inc = [
         "-I" + os.path.join(HERE, "lib"),
         "-I" + os.path.join(d, "include"),
@@ -190,7 +208,8 @@ def build_doom():
     d = os.path.join(HERE, "apps", "doom")
     ob = os.path.join(B, "doom")
     os.makedirs(ob, exist_ok=True)
-    arch = ["-march=rv32im_zicsr_zifencei", "-mabi=ilp32", "-g", "-ffunction-sections", "-fdata-sections"]
+    march_guard(ob)
+    arch = ["-march=" + MARCH, "-mabi=ilp32", "-g", "-ffunction-sections", "-fdata-sections"]
     inc = ["-I" + os.path.join(HERE, "lib"), "-I" + os.path.join(d, "src")]
     defs = ["-DBLTFAST", "-DFEATURE_SOUND", "-D_DEFAULT_SOURCE"]
     # the SoC library has its own printf: it is renamed to avoid clashing with newlib
@@ -238,7 +257,8 @@ def build_genesis():
     pd = os.path.join(d, "picodrive")
     ob = os.path.join(B, "genesis")
     os.makedirs(ob, exist_ok=True)
-    arch = ["-march=rv32im_zicsr_zifencei", "-mabi=ilp32", "-g", "-ffunction-sections", "-fdata-sections"]
+    march_guard(ob)
+    arch = ["-march=" + MARCH, "-mabi=ilp32", "-g", "-ffunction-sections", "-fdata-sections"]
     inc = ["-I" + os.path.join(HERE, "lib"), "-I" + pd, "-I" + os.path.join(pd, "zlib")]
     # C cores: FAME/C (68000), CZ80 (Z80); the SH2 interpreter is only there for the 32X code
     defs = ["-DEMU_F68K", "-D_USE_CZ80", "-DNDEBUG", "-falign-functions=2"]
@@ -330,6 +350,7 @@ def build_sonic(name, disasm, romname, lstname, codename, extra_gen, symsname, c
     dis = os.path.join(d, disasm)
     ob = os.path.join(B, name)
     os.makedirs(ob, exist_ok=True)
+    march_guard(ob)
     rom, lst = os.path.join(dis, romname), os.path.join(dis, lstname)
     if not (os.path.exists(rom) and os.path.exists(lst)):
         sys.exit(f"build the disassembly first (apps/{name}/{disasm}: build.bat) to get {romname} and {lstname}")
@@ -340,7 +361,7 @@ def build_sonic(name, disasm, romname, lstname, codename, extra_gen, symsname, c
     with open(os.path.join(ob, "rom.S"), "w") as f:
         f.write('.section .rodata.rom,"a"\n.balign 16\n.global ROM\nROM:\n.incbin "%s"\n' %
                 os.path.join(ob, "rom.bin").replace("\\", "/"))
-    arch = ["-march=rv32im_zicsr_zifencei", "-mabi=ilp32", "-g", "-ffunction-sections", "-fdata-sections"]
+    arch = ["-march=" + MARCH, "-mabi=ilp32", "-g", "-ffunction-sections", "-fdata-sections"]
     flags = arch + ["-I" + os.path.join(HERE, "lib"), "-I" + d, "-I" + ob, "-O2", "-Wall", "-Wextra",
                     "-Wno-unused-parameter", "-ffreestanding", "-fno-builtin"] + os.environ.get(cflags_env, "").split()
     jobs = [(os.path.join(HERE, "lib", f), flags) for f in
@@ -393,13 +414,14 @@ def build_smw():
     up, port = os.path.join(d, "smw"), os.path.join(d, "port")
     ob = os.path.join(B, "smw")
     os.makedirs(ob, exist_ok=True)
+    march_guard(ob)
     dat = os.path.join(up, "smw_assets.dat")
     if not os.path.exists(dat):
         sys.exit("missing apps/smw/smw/smw_assets.dat: run 'python assets/restool.py' there with smw.sfc (USA)")
     with open(os.path.join(ob, "assets.S"), "w") as f:
         f.write('.section .rodata.assets,"a"\n.balign 16\n.global smw_assets_dat, smw_assets_end\n'
                 'smw_assets_dat:\n.incbin "%s"\nsmw_assets_end:\n' % dat.replace("\\", "/"))
-    arch = ["-march=rv32im_zicsr_zifencei", "-mabi=ilp32", "-g", "-ffunction-sections", "-fdata-sections"]
+    arch = ["-march=" + MARCH, "-mabi=ilp32", "-g", "-ffunction-sections", "-fdata-sections"]
     inc = ["-I" + os.path.join(HERE, "lib"), "-I" + port, "-I" + os.path.join(port, "sdlstub"),
            "-I" + os.path.join(up, "src"), "-I" + up]
     extra = os.environ.get("SMW_CFLAGS", "").split()
@@ -463,7 +485,11 @@ def main():
     ap.add_argument("--bit", action="store_true", help="boot: synthesize the bitstream")
     ap.add_argument("--prog", action="store_true", help="load the bitstream into the FPGA (SRAM)")
     ap.add_argument("--flash", action="store_true", help="write the bitstream to flash")
+    ap.add_argument("--zb", action="store_true", help="apps with Zba/Zbb (bitstream BLT2)")
     a = ap.parse_args()
+    global MARCH
+    if a.zb:
+        MARCH = "rv32im_zba_zbb_zicsr_zifencei"
 
     binf = None
     if a.what == "boot":

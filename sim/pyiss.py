@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """pyiss.py - RV32IM reference simulator (minimal machine mode) for differential
 testing. Memory: 8 MB SDRAM visible at 0x4xxx_xxxx and 0x5xxx_xxxx
-(alias), I/O writes ignored except tohost (0x8000_0F00)."""
+(alias), I/O writes ignored except tohost (0x8000_0F00).
+The D-cache is modeled as in the RTL (16 KB direct-mapped, 32-byte lines,
+write-through without allocation, FENCE invalidates): a cached load can return
+stale data after a store through the uncached alias, as on the real CPU."""
 import struct
 
 M32 = 0xFFFFFFFF
@@ -13,7 +16,12 @@ def sx(v, b):
 
 
 class ISS:
-    def __init__(self, image, base=0x40000000):
+    DC_LINES = 512
+
+    def __init__(self, image, base=0x40000000, dcache=True):
+        self.dcache = dcache
+        self.dtag = [None] * self.DC_LINES          # line number (phys >> 5) or None
+        self.dline = [None] * self.DC_LINES         # bytearray(32)
         self.mem = bytearray(8 << 20)
         self.mem[0:len(image)] = image
         self.x = [0] * 32
@@ -27,10 +35,21 @@ class ISS:
             return a & 0x7FFFFF
         return None
 
+    def fetch(self, a):
+        p = self.phys(a)
+        return int.from_bytes(self.mem[p:p + 4], "little") if p is not None else 0
+
     def ld(self, a, size):
         p = self.phys(a)
         if p is None:
             return 0
+        if self.dcache and a >> 28 == 4:
+            ln, k = p >> 5, (p >> 5) % self.DC_LINES
+            if self.dtag[k] != ln:                  # miss: refill
+                self.dtag[k] = ln
+                self.dline[k] = bytearray(self.mem[ln << 5:(ln << 5) + 32])
+            o = p & 31
+            return int.from_bytes(self.dline[k][o:o + size], "little")
         return int.from_bytes(self.mem[p:p + size], "little")
 
     def st(self, a, size, v):
@@ -39,11 +58,20 @@ class ISS:
             if a == 0x80000F00:
                 self.done = v
             return
-        self.mem[p:p + size] = (v & ((1 << (8 * size)) - 1)).to_bytes(size, "little")
+        b = (v & ((1 << (8 * size)) - 1)).to_bytes(size, "little")
+        self.mem[p:p + size] = b
+        if self.dcache and a >> 28 == 4:            # write-through: updates the line only on a hit
+            ln, k = p >> 5, (p >> 5) % self.DC_LINES
+            if self.dtag[k] == ln:
+                o = p & 31
+                self.dline[k][o:o + size] = b
+
+    def fence(self):
+        self.dtag = [None] * self.DC_LINES
 
     def step(self):
         pc = self.pc
-        i = self.ld(pc, 4)
+        i = self.fetch(pc)
         op = i & 0x7F
         rd = (i >> 7) & 31
         f3 = (i >> 12) & 7
@@ -77,6 +105,8 @@ class ISS:
         elif op == 0x23:
             a = (r1 + imms) & M32
             self.st(a, {0: 1, 1: 2, 2: 4}[f3], r2)
+        elif op in (0x13, 0x33) and self.zb(op, f3, f7, i, r1, r2) is not None:
+            res = self.zb(op, f3, f7, i, r1, r2)
         elif op in (0x13, 0x33):
             b = immi & M32 if op == 0x13 else r2
             if op == 0x33 and f7 == 1:
@@ -101,7 +131,8 @@ class ISS:
                     res = r1 & b
                 res &= M32
         elif op == 0x0F:
-            pass
+            if f3 == 0:
+                self.fence()                        # FENCE invalidates the D-cache (FENCE.I does not)
         elif op == 0x73:
             if f3 != 0:
                 res = 0          # CSR: the generator does not use them except for reads that are ignored
@@ -111,6 +142,50 @@ class ISS:
             self.x[rd] = res & M32
         self.pc = npc
         self.n += 1
+
+    @staticmethod
+    def zb(op, f3, f7, i, a, b):
+        """Zba/Zbb: result, or None if it is not one of those instructions"""
+        rs2 = (i >> 20) & 31
+        i12 = (i >> 20) & 0xFFF
+        if op == 0x33:
+            if f7 == 0x10 and f3 in (2, 4, 6):
+                return ((a << (f3 >> 1)) + b) & M32
+            if f7 == 0x20 and f3 in (4, 6, 7):
+                nb = ~b & M32
+                return {4: a ^ nb, 6: a | nb, 7: a & nb}[f3]
+            if f7 == 0x05 and f3 >= 4:
+                sa, sb = sx(a, 32), sx(b, 32)
+                return {4: a if sa < sb else b, 5: min(a, b), 6: a if sa > sb else b, 7: max(a, b)}[f3]
+            if f7 == 0x30 and f3 in (1, 5):
+                sh = b & 31
+                if f3 == 5:
+                    sh = (32 - sh) & 31
+                return ((a << sh) | (a >> (32 - sh))) & M32 if sh else a
+            if f7 == 0x04 and f3 == 4 and rs2 == 0:
+                return a & 0xFFFF
+            return None
+        if f3 == 1 and f7 == 0x30:
+            if rs2 == 0:
+                return 32 - a.bit_length()
+            if rs2 == 1:
+                return 32 if a == 0 else (a & -a).bit_length() - 1
+            if rs2 == 2:
+                return bin(a).count("1")
+            if rs2 == 4:
+                return sx(a & 0xFF, 8) & M32
+            if rs2 == 5:
+                return sx(a & 0xFFFF, 16) & M32
+            return None
+        if f3 == 5:
+            if f7 == 0x30:
+                sh = (32 - (i >> 20)) & 31
+                return ((a << sh) | (a >> (32 - sh))) & M32 if sh else a
+            if i12 == 0x287:
+                return sum((0xFF << k) for k in (0, 8, 16, 24) if (a >> k) & 0xFF)
+            if i12 == 0x698:
+                return int.from_bytes(a.to_bytes(4, "little"), "big")
+        return None
 
     @staticmethod
     def muldiv(f3, a, b):

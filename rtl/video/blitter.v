@@ -12,6 +12,13 @@
 //   2 EXPAND  like BLIT but the source is 1 bit per pixel (MSB first;
 //             U in bits): bit 1 -> fg, bit 0 -> bg (or transparent)
 //   3 LINE    line from DST_XY to SIZE (x1 | y1 << 16) with COLOR.fg
+//   4 OPBLIT  like BLIT, but the destination row is read too and the texel
+//             can be an operator on the pixel below it (d):
+//               texel == fg -> d | M
+//               texel == bg -> d & ~M
+//               other       -> the texel (+ PALOFF with CMD[6])
+//             M = CMD[15:8]. With DU = DV = 0 and a source byte equal to fg
+//             (or bg) the whole rectangle is modified (shadow, bank change).
 //   Flags: CMD[4] transparency (texel == KEY is not written), CMD[5] transparent
 //   background in EXPAND, CMD[6] add PALOFF to the texels.
 //   Everything is clipped against CLIP (x0,y0 inclusive, x1,y1 exclusive).
@@ -165,6 +172,7 @@ module blitter (
     // fields of the current command
     reg [3:0]  op;
     reg        f_tr, f_bgtr, f_pal;
+    reg [7:0]  c_m;                       // OPBLIT operand (CMD[15:8])
     reg [22:0] c_dbase, c_src;
     reg [15:0] c_dstride, c_sstride;
     reg signed [15:0] c_cx0, c_cy0, c_cx1, c_cy1, c_dx, c_dy, c_w, c_h;
@@ -176,7 +184,7 @@ module blitter (
                E_GEN = 5'd10, E_GWAIT = 5'd11, E_WR = 5'd12, E_NEXT = 5'd13,
                E_DONE = 5'd14, E_LINE = 5'd15, E_LPIX = 5'd16, E_LWAIT = 5'd17,
                E_RANGE = 5'd18, E_WAITM = 5'd19, E_WR0 = 5'd20, E_WR1 = 5'd21,
-               E_LINIT = 5'd22, E_LSTEP = 5'd23;
+               E_LINIT = 5'd22, E_LSTEP = 5'd23, E_ROWA = 5'd24;
     reg [4:0]  es, es_ret;
     reg [1:0]  mwait;
     reg [4:0]  ld_i;
@@ -187,7 +195,7 @@ module blitter (
     reg signed [31:0] u_st, u_en, vcur;
     reg signed [15:0] s_lo, s_hi;        // extreme texels (or bytes in EXPAND)
     reg [22:0] drow;                      // address of the first visible pixel of the row
-    reg [22:0] srow;                      // address of the source row
+    reg [22:0] lo_a, hi_a;                // first and last byte of the source span
     // fast path (4 pixels/cycle): |DU| <= 1.0 -> the 4 texels fall in 4 consecutive bytes
     wire fast = (c_du <= 32'sh0001_0000) && (c_du >= -32'sh0001_0000);
 
@@ -219,6 +227,16 @@ module blitter (
         ob_q <= ob[ob_ra];
     end
 
+    // ---------------------------------------------------------------- destination buffer (DB, OPBLIT)
+    reg [31:0] db [0:511];
+    reg        db_we;
+    reg [8:0]  db_ra;
+    reg [31:0] db_q;
+    always @(posedge clk) begin
+        if (db_we) db[rb_wa] <= rb_wd;
+        db_q <= db[db_ra];
+    end
+
     // ---------------------------------------------------------------- source row read
     reg [22:2] rd_w;                     // next word to request
     reg [9:0]  rd_left;                  // words still to request
@@ -228,6 +246,7 @@ module blitter (
     reg [4:0]  bl_q;                     // length of the next burst (precomputed)
     reg        bl_ok;
     reg        row_last;
+    reg        rd_dst;                   // reading the destination row (OPBLIT)
     reg [1:0]  s_bias;                   // (address of the first byte) & 3
 
     // ---------------------------------------------------------------- generation
@@ -282,13 +301,18 @@ module blitter (
     endfunction
 
     // texel -> output pixel
-    function [8:0] xform(input [7:0] t, input bit_v, input is_exp);
+    function [8:0] xform(input [7:0] t, input bit_v, input is_exp, input is_op, input [7:0] d);
         reg [7:0] c;
         reg       tr;
         begin
             if (is_exp) begin
                 c  = bit_v ? c_fg : c_bg;
                 tr = ~bit_v & f_bgtr;
+            end else if (is_op) begin
+                c  = (t == c_fg) ? (d | c_m) :
+                     (t == c_bg) ? (d & ~c_m) :
+                     (f_pal ? t + c_pal : t);
+                tr = f_tr & (t == c_key);
             end else begin
                 c  = f_pal ? t + c_pal : t;
                 tr = f_tr & (t == c_key);
@@ -318,6 +342,10 @@ module blitter (
     assign ob_ra  = (es == E_WR0) ? 9'd0 : m_wnext ? wr_idx[8:0] + 9'd2 : wr_idx[8:0] + 9'd1;
 
     wire signed [16:0] c_dx17 = c_dx, c_dy17 = c_dy;
+    // destination words of the current row
+    wire [22:0] g_nw_w = ((drow + {7'd0, vw} - 23'd1) >> 2) - (drow >> 2) + 23'd1;
+    wire [9:0]  g_nw_n = g_nw_w[9:0];
+    reg  [9:0]  g_nwr;                    // g_nw_n registered at the start of each row
 
     // burst: up to 16 words without crossing 1 KB
     function [4:0] blen(input [22:2] wa, input [9:0] left);
@@ -331,6 +359,7 @@ module blitter (
 
     always @(posedge clk) begin
         rb_we <= 1'b0;
+        db_we <= 1'b0;
         ob_we <= 1'b0;
         irq   <= 1'b0;
         if (rst) begin
@@ -360,7 +389,8 @@ module blitter (
                 cq_ra <= {cq_rp, ld_i[3:0] + 4'd1};
                 ld_i  <= ld_i + 5'd1;
                 case (ld_i)
-                5'd1:  begin op <= cq_q[3:0]; f_tr <= cq_q[4]; f_bgtr <= cq_q[5]; f_pal <= cq_q[6]; end
+                5'd1:  begin op <= cq_q[3:0]; f_tr <= cq_q[4]; f_bgtr <= cq_q[5]; f_pal <= cq_q[6];
+                             c_m <= cq_q[15:8]; end
                 5'd2:  c_dbase   <= cq_q[22:0];
                 5'd3:  c_dstride <= cq_q[15:0];
                 5'd4:  begin c_cx0 <= cq_q[15:0]; c_cy0 <= cq_q[31:16]; end
@@ -431,6 +461,7 @@ module blitter (
             // ------------------------------------------------------------ rows
             E_ROW: begin
                 row_last <= (jrow + 16'sd1 >= vy1);
+                g_nwr    <= g_nw_n;
                 if (op == 4'd0) begin
                     es <= E_GEN;
                     g_run <= 1'b0;
@@ -441,27 +472,36 @@ module blitter (
             end
             E_ROWM: begin
                 // first and last word of the source row
-                begin : rr
-                    reg [22:0] lo_a, hi_a;
-                    lo_a = c_src + mp[22:0] + {{7{s_lo[15]}}, s_lo};
-                    hi_a = c_src + mp[22:0] + {{7{s_hi[15]}}, s_hi};
-                    srow    <= c_src + mp[22:0];
-                    s_bias  <= lo_a[1:0];
-                    rd_w    <= lo_a[22:2];
-                    rd_left <= hi_a[22:2] - lo_a[22:2] + 10'd1;
-                    rd_tot  <= hi_a[22:2] - lo_a[22:2] + 10'd1;
-                end
+                lo_a <= c_src + mp[22:0] + {{7{s_lo[15]}}, s_lo};
+                hi_a <= c_src + mp[22:0] + {{7{s_hi[15]}}, s_hi};
+                es   <= E_ROWA;
+            end
+            E_ROWA: begin
+                s_bias  <= lo_a[1:0];
+                rd_w    <= lo_a[22:2];
+                rd_left <= hi_a[22:2] - lo_a[22:2] + 10'd1;
+                rd_tot  <= hi_a[22:2] - lo_a[22:2] + 10'd1;
                 rd_got <= 10'd0;
                 rd_out <= 5'd0;
                 bl_ok  <= 1'b0;
+                rd_dst <= 1'b0;
                 es     <= E_RD;
             end
             E_RD: begin
                 if (!m_req && rd_out == 5'd0) begin
                     if (rd_left == 10'd0) begin
                         if (rd_got == rd_tot) begin
-                            es <= E_GEN;
-                            g_run <= 1'b0;
+                            if (op == 4'd4 && !rd_dst) begin
+                                // OPBLIT: then the destination words of the row
+                                rd_dst  <= 1'b1;
+                                rd_w    <= drow[22:2];
+                                rd_left <= g_nwr;
+                                rd_tot  <= g_nwr;
+                                rd_got  <= 10'd0;
+                            end else begin
+                                es <= E_GEN;
+                                g_run <= 1'b0;
+                            end
                         end
                     end else if (!bl_ok) begin
                         bl_q  <= blen(rd_w, rd_left);
@@ -478,7 +518,8 @@ module blitter (
                     end
                 end
                 if (m_rvalid) begin
-                    rb_we  <= 1'b1;
+                    rb_we  <= ~rd_dst;
+                    db_we  <= rd_dst;
                     rb_wa  <= rd_got[8:0];
                     rb_wd  <= m_rdata;
                     rd_got <= rd_got + 10'd1;
@@ -490,7 +531,7 @@ module blitter (
                 if (!g_run) begin
                     // row start
                     g_run <= 1'b1;
-                    g_nw  <= ((drow + {7'd0, vw} - 23'd1) >> 2) - (drow >> 2) + 23'd1;
+                    g_nw  <= g_nwr;
                     g_w   <= 10'd0;
                     g_k   <= 2'd0;
                     g_i   <= -$signed({15'd0, drow[1:0]});
@@ -652,6 +693,7 @@ module blitter (
             p2_b0 <= p1_u0[18:16]; p2_b1 <= p1_u1[18:16]; p2_b2 <= p1_u2[18:16]; p2_b3 <= p1_u3[18:16];
             // stage 3: RB read (address of each lane within the 4-byte window)
             p3_v <= p2_v; p3_last <= p2_last; p3_m <= p2_m; p3_w <= p2_w; p3_k <= p2_k;
+            db_ra <= p2_w;
             p3_l0 <= p2_s0[1:0]; p3_l1 <= p2_s1[1:0]; p3_l2 <= p2_s2[1:0]; p3_l3 <= p2_s3[1:0];
             p3_b0 <= p2_b0; p3_b1 <= p2_b1; p3_b2 <= p2_b2; p3_b3 <= p2_b3;
             begin : lanes
@@ -672,10 +714,10 @@ module blitter (
             if (op == 4'd0) begin
                 p5_x0 <= {1'b1, c_fg}; p5_x1 <= {1'b1, c_fg}; p5_x2 <= {1'b1, c_fg}; p5_x3 <= {1'b1, c_fg};
             end else begin
-                p5_x0 <= xform(lane_q[p4_l0], lane_q[p4_l0][3'd7 - p4_b0], op == 4'd2);
-                p5_x1 <= xform(lane_q[p4_l1], lane_q[p4_l1][3'd7 - p4_b1], op == 4'd2);
-                p5_x2 <= xform(lane_q[p4_l2], lane_q[p4_l2][3'd7 - p4_b2], op == 4'd2);
-                p5_x3 <= xform(lane_q[p4_l3], lane_q[p4_l3][3'd7 - p4_b3], op == 4'd2);
+                p5_x0 <= xform(lane_q[p4_l0], lane_q[p4_l0][3'd7 - p4_b0], op == 4'd2, op == 4'd4, db_q[7:0]);
+                p5_x1 <= xform(lane_q[p4_l1], lane_q[p4_l1][3'd7 - p4_b1], op == 4'd2, op == 4'd4, db_q[15:8]);
+                p5_x2 <= xform(lane_q[p4_l2], lane_q[p4_l2][3'd7 - p4_b2], op == 4'd2, op == 4'd4, db_q[23:16]);
+                p5_x3 <= xform(lane_q[p4_l3], lane_q[p4_l3][3'd7 - p4_b3], op == 4'd2, op == 4'd4, db_q[31:24]);
             end
             // stage 6: packing
             if (p5_v) begin : pack

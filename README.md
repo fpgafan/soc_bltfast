@@ -21,17 +21,18 @@ A SoC written from scratch for the Sipeed Tang Nano 20K (Gowin GW2AR-LV18QN88C8/
 
 | Block | Summary |
 |---|---|
-| **CPU** | Custom RV32IM_Zicsr, 6 stages (F1 F2 D E M W), **90 MHz** (timing constrained at 99 MHz: ~10 % margin). 8 KB I-cache, 16 KB write-through D-cache (both direct-mapped; sizes are parameters of `rtl/cpu/cpu.v`), static prediction + JAL + return address stack, 4-cycle MUL (DSP), 12–38 cycle DIV, interrupts (timer, external, software) |
+| **CPU** | Custom RV32IM_Zicsr + **Zba/Zbb** (bit manipulation), 6 stages (F1 F2 D E M W), **90 MHz** (timing constrained at 99 MHz: ~10 % margin). 8 KB I-cache, 16 KB write-through D-cache (both direct-mapped; sizes are parameters of `rtl/cpu/cpu.v`), **dynamic branch prediction** (static BTFN corrected by 256 2-bit "disagree" counters, 32-entry target table for indirect `jalr`) + JAL + return address stack, 4-cycle MUL (DSP), 12–38 cycle DIV, interrupts (timer, external, software). Zba/Zbb: `sext`/`zext`/`andn`/`orn`/`xnor` in 1 cycle; `shNadd`, `min`/`max`, `rol`/`ror`, `rev8`, `orc.b` with the result at the end of M (like a load); `clz`/`ctz`/`cpop` multicycle (4–12) |
 | **Memory** | 8 MB embedded SDRAM, controller with 4 masters (video > sound > CPU ↔ 2D engine), bursts of up to 16 words; programmable capture latency and SDRAM clock phase (the boot ROM calibrates them automatically) |
 | **Video** | 640×480@60, 8 bpp with a 256-color RGB888 palette, double-buffered framebuffer in SDRAM, **hardware scrolling** with continuous horizontal and vertical wrap-around, VBLANK and raster interrupts |
 | **HDMI** | TMDS + data islands: **48 kHz PCM audio over HDMI**, AVI/Audio InfoFrames |
-| **2D engine (blitter)** | 32-command DMA queue: fill, copy with **scaling and mirroring**, **transparency** (color key), palette offset, 1 bpp text (fonts), lines; hardware clipping. 4 pixels/cycle for 1:1 copies and upscaling |
+| **2D engine (blitter)** | 32-command DMA queue: fill, copy with **scaling and mirroring**, **transparency** (color key), palette offset, 1 bpp text (fonts), lines, **OPBLIT** (texels that operate on the pixel below: `d \| M` / `d & ~M`, e.g. Mega Drive shadow/highlight); hardware clipping. 4 pixels/cycle for 1:1 copies and upscaling |
 | **Sound** | **32 wavetable/PCM voices** with DMA from SDRAM: 8/16 bits, mono/stereo, 16.16 pitch, linear interpolation, **hardware ADSR**, L/R volume, loops and events for streaming. Output over HDMI and through the board's I2S DAC + amplifier |
 | **FM (OPL2)** | Hardware FM synthesizer compatible with the **YM3812 (AdLib / Sound Blaster)**: 9 channels × 2 operators, 4 waveforms, vibrato/tremolo, KSL/KSR, feedback; bit-exact with Nuked-OPL3 in OPL2 mode. Mixed into the sound engine output |
 | **MIDI** | Software player for standard MIDI files (type 0/1): on the sample voices (16 channels, GM instruments by family with generated band-limited waveforms, percussion on channel 10) or **on the OPL2** with GENMIDI banks (the bundled Freedoom one or the one from a Doom WAD) |
 | **I/O** | UART (2 Mbaud loader), microSD (SPI with hardware block transfers, FAT32/16), 2 SNES/NES pads, PS/2 keyboard, 6 LEDs, 2 buttons |
 
-Utilization (Gowin 1.9.12.04): ~73 % of the logic, 37/46 BSRAM, 13/24 DSP, 2/2 PLL.
+Utilization (Gowin 1.9.12.04): ~78 % of the logic (91 % CLS), 38/46 BSRAM, 13/24 DSP, 2/2 PLL.
+Fmax 99.8 MHz with `place_option 3` (with option 1 it is 96.9 MHz at this size).
 
 ## Layout
 
@@ -59,6 +60,7 @@ C:\Gowin\Gowin_V1.9.12.04_x64\IDE\bin\gw_sh.exe build.tcl     # bitstream: impl/
 openFPGALoader -b tangnano20k impl/pnr/bltfast.fs             # or Gowin Programmer (SRAM or flash)
 cd sw
 python build.py doom --run                 # builds Doom, loads it over UART and opens the terminal
+python build.py doom --zb                  # same, with Zba/Zbb (needs the "BLT2" bitstream)
 ```
 
 The boot ROM:
@@ -100,7 +102,8 @@ code, `fence.i`.
 
 All the names are in `sw/lib/soc.h`. Summary:
 
-- **sysctl `0x8000_0000`**: ID, LED, BTN (level of the S1/S2 pins), CLK_HZ,
+- **sysctl `0x8000_0000`**: ID (`"BLT2"`; the last character is the version, `SYS_VERSION` in
+  `soc.h`: 2 = OPBLIT and Zba/Zbb), LED, BTN (level of the S1/S2 pins), CLK_HZ,
   MTIME/MTIMECMP (64 bits, cycles), MSIP, IRQ_PEND/IRQ_EN (0 UART, 1 VBLANK,
   2 RASTER, 3 blitter, 4 sound, 5 PS/2), SDRAM (latency/phase), RESET
   (`0x5EB007`), SCRATCH, MISC (bit 0 amplifier).
@@ -114,7 +117,8 @@ All the names are in `sw/lib/soc.h`. Summary:
   Palette at `0x8000_3000` (256 × `0x00RRGGBB`).
 - **Blitter `0x8000_4000`**: DST/DSTRIDE/CLIP0/CLIP1 (destination surface),
   SRC/SSTRIDE, XY, SIZE, COLOR (fg, bg, key, paloff), U0/V0/DU/DV (16.16),
-  CMD (queues: FILL, BLIT, EXPAND, LINE + flags), STATUS, IRQ. See `rtl/video/blitter.v`.
+  CMD (queues: FILL, BLIT, EXPAND, LINE, OPBLIT + flags; OPBLIT operand M in CMD[15:8]),
+  STATUS, IRQ. See `rtl/video/blitter.v`.
 - **Sound `0x8000_5000`**: 32 voices × {CTRL, START, LEN, LOOP, PITCH, VOL, ADSR};
   globals CTRL (volume), KEYON, KEYOFF, STOP, ACTIVE, EVENT, IRQ_EN, COUNT,
   LAST, MON_*. See `rtl/audio/audio.v`.
@@ -186,8 +190,8 @@ Tools (`python tools/<tool> -h` shows the options):
 | Test | What it checks |
 |---|---|
 | `sim/run_isa.py` | 49 official riscv-tests (rv32ui + rv32um) on CPU + SDRAM |
-| `sim/run_rand.py N` | random RV32IM programs (ALU, mul/div, cached and uncached loads/stores, I/O, fence, branches, loops, calls) against a Python ISS: registers and memory |
-| `sim/run_blit.py N` | random blitter commands (every operation, clipping, scaling, mirroring, transparency) against a model, byte by byte; with `--vid` it competes with video traffic |
+| `sim/run_rand.py N` | random RV32IM + Zba/Zbb programs (ALU, bit manipulation with dependent chains, mul/div, cached and uncached loads/stores, I/O, fence, branches, loops, calls, jump tables and indirect calls) against a Python ISS: registers and memory. The ISS models the D-cache (a cached load after a store through the uncached alias returns the old data, as on the CPU). `ZB=0`: plain RV32IM |
+| `sim/run_blit.py N` | random blitter commands (every operation including OPBLIT, clipping, scaling, mirroring, transparency) against a model, byte by byte; with `--vid` it competes with video traffic |
 | `sim/run_audio.py N` | 32 voices with random parameters and events against a bit-exact model |
 | `sim/run_opl.py S N [--musical]` | OPL2: random registers or notes with instruments, sample by sample against `sim/oplmodel.py` (port of Nuked-OPL3, validated against the original compiled for RISC-V) |
 | `sim/run_vid.py` | a full decoded TMDS frame: pixels = palette[framebuffer] with scroll/wrap, syncs, data islands with BCH ECC, ACR, InfoFrames and audio samples |
@@ -349,7 +353,7 @@ SoC then closes timing at only 91–95 MHz instead of 99 (see *Caches* in the hi
 | Tool | Use |
 |---|---|
 | `sim/rvtorture.py` + `sim/torture.sh` | random RV32IM programs (ALU, MUL/DIV, loads/stores, branches, calls, I/O, video) run on the board and in the emulator; compares the final signature |
-| `tools/socemu.js` | functional SoC emulator in Node.js (CPU, SD, blitter, video, PS/2, pads, OPL2): runs a `.bin`, saves PNG screenshots (`--shots`), simulates keys/pads (`--keys`, `--pads`) and records the FM music into a WAV (`--oplwav`, with `tools/opl2.js`). By default 1 cycle per instruction; `--timing [I,D,U,B,S]` adds an approximate cycle model (I/D-cache misses with the real direct-mapped geometry, sizes with `--cache I,D` in KB, default 8,16 as in the RTL; uncached loads, mispredicted branches, load-use, MUL/DIV, stores that do not combine; default penalties 16,16,12,3,4, calibrated with Doom). `--prof elf` prints a profile by function. The playback position of the voices (`AUD_MON_POS`) is modelled, so PCM streaming paces correctly |
+| `tools/socemu.js` | functional SoC emulator in Node.js (CPU, SD, blitter, video, PS/2, pads, OPL2): runs a `.bin`, saves PNG screenshots (`--shots`), simulates keys/pads (`--keys`, `--pads`) and records the FM music into a WAV (`--oplwav`, with `tools/opl2.js`). Zba/Zbb and OPBLIT are emulated; `--id 1` reports an older SoC (`"BLT1"`, no OPBLIT/Zb). By default 1 cycle per instruction; `--timing [I,D,U,B,S]` adds an approximate cycle model (I/D-cache misses with the real direct-mapped geometry, sizes with `--cache I,D` in KB, default 8,16 as in the RTL; uncached loads, mispredicted branches, load-use, MUL/DIV, stores that do not combine; default penalties 16,16,12,3,4, calibrated with Doom; branches with the CPU's dynamic predictor, `--bp static` for the old one). `--prof elf` prints a profile by function. The playback position of the voices (`AUD_MON_POS`) is modelled, so PCM streaming paces correctly |
 
 ## History
 
@@ -361,6 +365,7 @@ SoC then closes timing at only 91–95 MHz instead of 99 (see *Caches* in the hi
 | 2026-10-21 | **MIDI on the OPL2 for custom programs** (`sw/lib/oplsynth.c`, Freedoom bank `genmidi_fd.c`, `midi_use_opl*` API, `midi_load_file`) |
 | 2026-10-26 | **Genesis emulator feasibility study** (`sw/apps/genesis`, PicoDrive core, not published); `tools/socemu.js`: cycle model `--timing` and voice playback position |
 | 2026-10-26 | **Caches**: the sizes are parameters (`IC_IDXW`, `DC_IDXW` in `rtl/cpu/cpu.v`); **D-cache 8 → 16 KB**. Cycle model (`--cache`): Doom 2 timedemo 35.1 → 36.7 FPS (+4.5 %). With I 16 KB + D 16 KB it would be 37.6 FPS (+7 %, Sonic +8 %), but Fmax drops to 91–95 MHz with any placement option (more BSRAM spreads the core out) and the 10 % margin is lost; I 8 + D 16 keeps 99.07 MHz. `rvtorture`: buffer B at +16 KB so it still collides in the cache. Not yet tested on the board |
+| 2026-11-18 | **Zba/Zbb** in the CPU, **dynamic branch prediction** (BHT of "disagree" counters + targets of indirect `jalr`), blitter **OPBLIT** (Sonic 3's special stage uses it for shadow/highlight sprites instead of the CPU). SoC ID `"BLT2"`. `build.py --zb` builds apps with Zba/Zbb (they need this bitstream). Cycle model, Sonic 3 in a level: mispredictions 45.5 M → 13.6 M in 1500 frames; `ym_render` −6 % (predictor), −10 % (predictor + Zb); Zb code 70 KB smaller. Fmax 99.8 MHz (`place_option 3`). Not yet tested on the board |
 
 ## Future plans
 

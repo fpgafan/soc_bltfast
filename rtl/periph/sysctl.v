@@ -1,6 +1,6 @@
 // ============================================================================
 // sysctl.v - System registers (base 0x8000_0000)
-//   +0x00 ID        R  "BLT1"
+//   +0x00 ID        R  "BLT2" (last character = version: 2 adds OPBLIT and Zba/Zbb)
 //   +0x04 LED       RW [5:0] (1 = on)
 //   +0x08 BTN       R  [1:0] = {S2, S1}, pin level
 //   +0x0C CLK_HZ    R  system clock frequency
@@ -96,7 +96,7 @@ module sysctl #(
             end
         end
         case (a[5:2])
-        4'h0: rd <= "BLT1";
+        4'h0: rd <= "BLT2";
         4'h1: rd <= {26'd0, led};
         4'h2: rd <= {30'd0, b_s1};                    // pin level (see README)
         4'h3: rd <= CLK_HZ;

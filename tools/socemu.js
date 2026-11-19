@@ -8,6 +8,9 @@
 //      [--cache I,D]     I-cache / D-cache size in KB for --timing (default 8,16, as in the RTL)
 //      [--blt O,R,P]     blitter time for --timing: O cycles per command + per row R cycles
 //                        + width/P (default 20,12,1: close to the board); 32-command queue (CMD waits when full)
+//      [--bp static]     --timing with the old static prediction (backward taken, JALR only
+//                        returns) instead of the dynamic one of the CPU (BHT + JALR targets)
+//      [--id N]          SoC version reported in SYS_ID ("BLT<N>", default 2; 1 = without OPBLIT/Zb)
 //      [--trapmisal]     misaligned loads/stores raise exceptions 4/6 (mtval = address), as the CPU does
 //      [--dump addr,len,file]  at the end, writes len bytes of memory from addr (SDRAM, hex) to a file
 //      PROFPC=N (environment, with --prof): also the N hottest instruction addresses
@@ -28,6 +31,8 @@ for (let i = 2; i < args.length; i++) {
   else if (a === '--out') opt.out = args[++i];
   else if (a === '--maxsec') opt.maxsec = +args[++i];
   else if (a === '--prof') opt.prof = args[++i];
+  else if (a === '--bp') opt.bp = args[++i];
+  else if (a === '--id') opt.id = +args[++i];
   else if (a === '--sdslow') opt.sdslow = +args[++i];
   else if (a === '--trapmisal') opt.trapmisal = true;
   else if (a === '--oplwav') opt.oplwav = args[++i];
@@ -129,6 +134,25 @@ function blitExec(cmd) {
   const col = blt[9], fg = col & 255, bg = (col >> 8) & 255, kc = (col >> 16) & 255, po = (col >>> 24) & 255;
   const u0 = blt[10] | 0, v0 = blt[11] | 0, du = blt[12] | 0, dvv = blt[13] | 0;
   if (op === 3) return;      // LINE: not used
+  if (op === 4) {            // OPBLIT: source span and destination row read before writing
+    const m = (cmd >> 8) & 255, out = [];
+    for (let j = 0; j < H; j++) {
+      const dy = Y + j;
+      if (dy < cy0 || dy >= cy1) continue;
+      const ty = ((v0 + j * dvv) | 0) >> 16;
+      out.length = 0;
+      for (let i = 0; i < W; i++) {
+        const dx = X + i;
+        if (dx < cx0 || dx >= cx1) continue;
+        const t = m8[(src + ty * sstr + (((u0 + i * du) | 0) >> 16)) & 0x7FFFFF];
+        if (key && t === kc) continue;
+        const a = (dst + dy * dstr + dx) & 0x7FFFFF, d = m8[a];
+        out.push(a, t === fg ? d | m : t === bg ? d & ~m : poff ? t + po : t);
+      }
+      for (let k = 0; k < out.length; k += 2) m8[out[k]] = out[k + 1] & 255;
+    }
+    return;
+  }
   for (let j = 0; j < H; j++) {
     const dy = Y + j;
     if (dy < cy0 || dy >= cy1) continue;
@@ -187,7 +211,7 @@ function ioLoad(a) {
   a >>>= 0;
   if (a >= 0x80000000 && a < 0x80001000) {
     switch (a & 0xFFF) {
-      case 0x00: return 0xB17F0001;
+      case 0x00: return 0x424C5430 + (opt.id || 2);   // "BLT2"
       case 0x08: return 0;
       case 0x0C: return CPU_HZ;
       case 0x34: return sysScratch;
@@ -416,6 +440,60 @@ function dAccess(a) {
   } else if (u === 5 || u === 1) { cycles += PEN_U; tmStats.unc++; }
   else if (u >= 8) cycles += 3;
 }
+// Zba/Zbb: result, or undefined if the instruction is not one of them
+function zb(op, f3, f7, i, a, b) {
+  const rs2 = (i >> 20) & 31;
+  if (op === 0x33) {
+    if (f7 === 0x10 && (f3 === 2 || f3 === 4 || f3 === 6)) return ((a << (f3 >> 1)) + b) | 0;
+    if (f7 === 0x20 && f3 === 4) return a ^ ~b;
+    if (f7 === 0x20 && f3 === 6) return a | ~b;
+    if (f7 === 0x20 && f3 === 7) return a & ~b;
+    if (f7 === 0x05 && f3 >= 4) {
+      switch (f3) {
+        case 4: return a < b ? a : b;
+        case 5: return (a >>> 0) < (b >>> 0) ? a : b;
+        case 6: return a > b ? a : b;
+        default: return (a >>> 0) > (b >>> 0) ? a : b;
+      }
+    }
+    if (f7 === 0x30 && f3 === 1) { const n = b & 31; return n ? (a << n) | (a >>> (32 - n)) : a; }
+    if (f7 === 0x30 && f3 === 5) { const n = b & 31; return n ? (a >>> n) | (a << (32 - n)) : a; }
+    if (f7 === 0x04 && f3 === 4 && rs2 === 0) return a & 0xFFFF;
+    return undefined;
+  }
+  if (f3 === 1 && f7 === 0x30) {
+    switch (rs2) {
+      case 0: return Math.clz32(a);
+      case 1: return a === 0 ? 32 : 31 - Math.clz32(a & -a);
+      case 2: { let v = a >>> 0, c = 0; while (v) { v &= v - 1; c++; } return c; }
+      case 4: return a << 24 >> 24;
+      case 5: return a << 16 >> 16;
+    }
+    return undefined;
+  }
+  if (f3 === 5) {
+    if (f7 === 0x30) { const n = (i >> 20) & 31; return n ? (a >>> n) | (a << (32 - n)) : a; }
+    const i12 = (i >>> 20) & 0xFFF;
+    if (i12 === 0x287) {
+      let v = 0;
+      for (let k = 0; k < 32; k += 8) if ((a >>> k) & 255) v |= 255 << k;
+      return v;
+    }
+    if (i12 === 0x698) return ((a & 255) << 24) | ((a & 0xFF00) << 8) | ((a >>> 8) & 0xFF00) | (a >>> 24);
+  }
+  return undefined;
+}
+// slow Zba/Zbb operations (result at the end of M, like a load): shNadd orc.b rev8 rol ror rori min max
+// (clz/ctz/cpop are multicycle in the mul/div unit)
+function zbLate(op, f3, f7, i) {
+  if (op === 0x33) return f7 === 0x05 || f7 === 0x30 || (f7 === 0x10 && (f3 & 1) === 0 && f3 !== 0);
+  const i12 = (i >>> 20) & 0xFFF;
+  return f3 === 5 && (f7 === 0x30 || i12 === 0x287 || i12 === 0x698);
+}
+// dynamic branch prediction (--timing), as in rv_core.v: 512 counters of
+// disagreement with BTFN (pc[9:2]) and 32 last JALR targets (pc[6:2])
+const BP_DYN = opt.bp !== 'static';
+const bht = new Uint8Array(256), jtab = new Int32Array(32), jval = new Uint8Array(32);
 const prof = opt.prof ? [] : null;
 let profNext = 0;
 function run() {
@@ -436,7 +514,7 @@ function run() {
         if (itag[k] !== line) { itag[k] = line; cycles += PEN_I; tmStats.imiss++; }
         // load-use: the previous instruction was a load whose result is used now
         if (loadRd && (r1 === loadRd || (r2 === loadRd && (op === 0x33 || op === 0x23 || op === 0x63)))) { cycles++; tmStats.lu++; }
-        loadRd = op === 0x03 ? rd : 0;
+        loadRd = (op === 0x03 || ((op === 0x13 || op === 0x33) && zbLate(op, f3, i >>> 25, i))) ? rd : 0;
       }
       switch (op) {
         case 0x37: if (rd) x[rd] = i & 0xFFFFF000; break;
@@ -447,7 +525,14 @@ function run() {
         }
         case 0x67: {
           const t = (x[r1] + (i >> 20)) & ~1; if (rd) x[rd] = npc; npc = t;
-          if (TM && !(rd === 0 && r1 === 1)) { cycles += PEN_B; tmStats.br++; }   // returns: return address stack
+          if (TM) {
+            const ret = rd === 0 && (r1 === 1 || r1 === 5);       // returns: return address stack
+            if (BP_DYN && !ret && (i >>> 20) === 0) {
+              const k = (pc >>> 2) & 31;
+              if (!(jval[k] && jtab[k] === t)) { cycles += PEN_B; tmStats.br++; }
+              jval[k] = 1; jtab[k] = t;
+            } else if (!ret) { cycles += PEN_B; tmStats.br++; }
+          }
           break;
         }
         case 0x63: {
@@ -461,8 +546,14 @@ function run() {
             default: throw new Error('branch');
           }
           if (t) npc = (pc + imm) | 0;
-          // static prediction: backward taken, forward not taken
-          if (TM && t !== (imm < 0)) { cycles += PEN_B; tmStats.br++; }
+          // static prediction: backward taken, forward not taken (corrected by the BHT)
+          if (TM) {
+            if (BP_DYN) {
+              const k = (pc >>> 2) & 255, c = bht[k], dis = t !== (imm < 0);
+              if (dis !== (c >= 2)) { cycles += PEN_B; tmStats.br++; }
+              bht[k] = dis ? Math.min(3, c + 1) : Math.max(0, c - 1);
+            } else if (t !== (imm < 0)) { cycles += PEN_B; tmStats.br++; }
+          }
           break;
         }
         case 0x03: {
@@ -479,8 +570,9 @@ function run() {
         }
         case 0x13: {
           const imm = i >> 20, a = x[r1];
-          let v;
-          switch (f3) {
+          let v = (f3 === 1 || f3 === 5) ? zb(0x13, f3, i >>> 25, i, a, 0) : undefined;
+          if (TM && v !== undefined && f3 === 1 && ((i >> 20) & 31) <= 2) cycles += 8;   // clz/ctz/cpop: multicycle
+          if (v === undefined) switch (f3) {
             case 0: v = (a + imm) | 0; break; case 1: v = a << (imm & 31); break;
             case 2: v = a < imm ? 1 : 0; break; case 3: v = (a >>> 0) < (imm >>> 0) ? 1 : 0; break;
             case 4: v = a ^ imm; break; case 5: v = (i >>> 30) & 1 ? a >> (imm & 31) : a >>> (imm & 31); break;
@@ -491,8 +583,11 @@ function run() {
         case 0x33: {
           const a = x[r1], b = x[r2], f7 = i >>> 25;
           let v;
-          if (f7 === 1) {
-            if (TM) cycles += f3 < 4 ? 3 : 25;
+          if (f7 !== 0 && f7 !== 1 && f7 !== 0x20) v = zb(0x33, f3, f7, i, a, b);
+          if (v === undefined && f7 === 0x20 && f3 !== 0 && f3 !== 5) v = zb(0x33, f3, f7, i, a, b);
+          if (v !== undefined) ;
+          else if (f7 === 1) {
+            if (TM) cycles += f3 < 4 ? 3 : 25;   // (clz/ctz/cpop: see zbCnt)
             switch (f3) {
               case 0: v = Math.imul(a, b); break;
               case 1: v = Number((BigInt(a) * BigInt(b)) >> 32n) | 0; break;

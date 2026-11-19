@@ -63,9 +63,31 @@ class Model:
         u_st = s32(u0 + (vx0 - dx) * du)
         v = s32(v0 + (vy0 - dy) * dv)
         drow = (dbase + vy0 * dstr + vx0) % MEMB
+        m = (cmd >> 8) & 255
         for y in range(vy0, vy1):
             row = s32(v) >> 16
             srow = (src + s32(row * sstr)) % MEMB
+            if op == 4:
+                # the source span and the destination row are read before writing
+                outs = []
+                for i in range(vw):
+                    u = s32(u_st + i * du)
+                    t = self.rd(srow + (u >> 16))
+                    d = self.rd(drow + i)
+                    if f_tr and t == key:
+                        continue
+                    if t == fg:
+                        c = d | m
+                    elif t == bg:
+                        c = d & ~m
+                    else:
+                        c = t + pal if f_pal else t
+                    outs.append((drow + i, c))
+                for a, c in outs:
+                    self.wr(a, c)
+                v = s32(v + dv)
+                drow = (drow + dstr) % MEMB
+                continue
             for i in range(vw):
                 u = s32(u_st + i * du)
                 if op == 0:
@@ -105,11 +127,15 @@ class Model:
                 y += sy
 
 
+OPS = [0, 1, 1, 1, 2, 3, 4, 4]
+SMALL = [0x11, 0x22, 0x33, 0x44]       # contents of 0x20000-0x2FFFF (operators and key)
+
+
 def gen(rng, n):
     cmds = []
     for _ in range(n):
         r = [0] * 14
-        op = rng.choice([0, 1, 1, 1, 2, 3])
+        op = rng.choice(OPS)
         dst = rng.choice([0x40000, 0x40000 + rng.randrange(0, 4096)])
         dstr = rng.choice([640, 1024, 700, 512])
         r[1], r[2] = dst, dstr
@@ -124,7 +150,7 @@ def gen(rng, n):
         if rng.random() < 0.2:
             w = rng.randrange(1, 9)
         flags = 0
-        if op in (1, 2):
+        if op in (1, 2, 4):
             src = rng.randrange(0, 0x30000)
             sstr = rng.choice([64, 128, 256, 333, 640, 1024])
             r[5], r[6] = src, sstr
@@ -159,6 +185,19 @@ def gen(rng, n):
                 flags |= 0x40
             if op == 2 and rng.random() < 0.5:
                 flags |= 0x20
+            if op == 4:
+                if rng.random() < 0.7:
+                    r[5] = 0x20000 + rng.randrange(0, 0x4000)
+                flags |= rng.randrange(256) << 8
+                if rng.random() < 0.3:
+                    # in place: source = destination, or a constant texel
+                    k = rng.random()
+                    r[5], r[6] = dst, dstr
+                    r[10], r[11], r[12], r[13] = 0, 0, 0x10000, 0x10000
+                    if k < 0.5:
+                        r[12] = r[13] = 0
+                        r[10] = rng.randrange(0, 100) << 16
+                        r[11] = rng.randrange(0, 50) << 16
         else:
             r[10], r[11], r[12], r[13] = 0, 0, 0x10000, 0x10000
         if op == 3:
@@ -166,6 +205,10 @@ def gen(rng, n):
         r[7] = (dx & 0xFFFF) | ((dy & 0xFFFF) << 16)
         r[8] = (w & 0xFFFF) | ((h & 0xFFFF) << 16)
         r[9] = rng.randrange(1 << 32)
+        if op == 4:
+            # few colors so that the operators and the key appear often
+            c = rng.sample(SMALL, 3)
+            r[9] = c[0] | c[1] << 8 | c[2] << 16 | rng.randrange(256) << 24
         cmds.append((r, op | flags))
     return cmds
 
@@ -176,6 +219,8 @@ def main():
     n = int(args[1]) if len(args) > 1 else 40
     rng = random.Random(seed)
     mem = bytearray(rng.randrange(256) for _ in range(REGION))
+    for i in range(0x20000, 0x30000):
+        mem[i] = rng.choice(SMALL)
     mem += bytearray(MEMB - REGION)
     with open(os.path.join(BUILD, "blit_init.hex"), "w") as f:
         for i in range(0, REGION, 4):

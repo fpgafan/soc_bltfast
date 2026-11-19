@@ -9,7 +9,7 @@ set_option -verilog_std v2001
 set_option -use_mspi_as_gpio 1
 set_option -use_sspi_as_gpio 1
 set_option -timing_driven 1
-set_option -place_option 1
+set_option -place_option 3
 set_option -route_option 1
 set_option -ireg_in_iob 1
 set_option -oreg_in_iob 1

@@ -22,6 +22,7 @@
 // ---------------------------------------------------------------- system
 #define SYS_BASE       0x80000000u
 #define SYS_ID         REG32(SYS_BASE + 0x00)
+#define SYS_VERSION    ((SYS_ID & 0xFFu) - '0')   // 2: OPBLIT and Zba/Zbb
 #define SYS_LED        REG32(SYS_BASE + 0x04)
 #define SYS_BTN        REG32(SYS_BASE + 0x08)
 #define SYS_CLK_HZ     REG32(SYS_BASE + 0x0C)
@@ -100,6 +101,9 @@
 #define BLT_OP_BLIT    1u
 #define BLT_OP_EXPAND  2u
 #define BLT_OP_LINE    3u
+#define BLT_OP_OPBLIT  4u          // BLIT where texel fg/bg operate on the pixel below:
+                                   //   fg -> d | M, bg -> d & ~M
+#define BLT_M(m)       ((uint32_t)(m) << 8)   // OPBLIT operand M (CMD[15:8])
 #define BLT_F_KEY      (1u << 4)
 #define BLT_F_BGTRANS  (1u << 5)
 #define BLT_F_PALOFF   (1u << 6)
